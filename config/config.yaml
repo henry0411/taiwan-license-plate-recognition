@@ -1,0 +1,78 @@
+# 台灣車牌辨識設定檔
+# 修改後執行 `docker compose restart` 生效
+
+synology:
+  # Synology Chat 傳入 webhook (含 token, 請勿外流)
+  webhook_url: "https://<your-synology-host>/webapi/entry.cgi?api=SYNO.Chat.External&method=incoming&version=2&token=<YOUR_TOKEN>"
+  # 附上車輛截圖: NAS 會從此網址抓圖, 須為 NAS 連得到的本機位址; 留空則只發文字
+  snapshot_base_url: "http://lpr-host:8091"
+  verify_ssl: true
+
+web:
+  port: 8091            # 即時畫面 / 截圖: http://<主機>:8091/
+
+detection:
+  plate_detector: yolo-v9-t-384-license-plate-end2end
+  ocr_models: [cct-xs-v2-global-model, cct-s-v2-global-model]  # 多模型平均, 較準
+  cpu_threads: 1        # 每次推論使用的 CPU 執行緒數
+  plate_conf: 0.4       # 車牌框偵測門檻
+  frame_min_conf: 0.45  # 單張畫面信心低於此值 (模糊/遮擋) 不納入
+  ocr_min_conf: 0.6     # 累積後的車牌信心門檻 (每字幾何平均機率)
+  include_motorcycle_formats: true   # 是否接受舊式機車車牌格式 (ABC-123 / 123-ABC)
+  min_votes: 3          # 至少累積幾張畫面, 且最近幾次解碼一致才確認
+  ocr_interval: 1.0     # 每台車 OCR 間隔(秒)
+  ocr_max_attempts: 20  # 同一車牌嘗試幾次仍無法確認後, 改用較長間隔
+  ocr_retry_interval: 30  # 上述情況的 OCR 間隔(秒)
+  static_change: 0.005  # 畫面變化像素比例低於此值視為靜止, 略過偵測 (省 CPU)
+  static_refresh: 10    # 靜止畫面每隔幾秒仍完整處理一次
+  track_lost_seconds: 30      # 車牌消失多久後視為離開
+  plate_cooldown_seconds: 21600  # 同一鏡頭同一車牌再次通知的冷卻時間 (6 小時)
+
+# 整台車輛偵測/追蹤: 車牌駛入時讀到即延續車號; 停妥後一直讀不到車牌則通知「無法辨識」
+vehicle:
+  model: yolov8n-416.onnx   # 車輛偵測模型 (鏡頭可用 vehicle_model 個別指定)
+  pad: 0.15                 # 四周留白比例, 近距離被切掉的車較容易偵測
+  conf: 0.2                 # 車輛偵測信心門檻
+  interval: 2.0             # 車輛偵測間隔 (秒)
+  min_area: 0.01            # 車框面積佔畫面比例下限 (排除遠處車輛)
+  zone_overlap: 0.3         # 車框至少多少比例落在圍籬內才算停在區內
+  lost_seconds: 60          # 偵測不到多久視為離開
+  relink_seconds: 600       # 離開後多久內在同位置再出現, 視為同一台車 (保留車號)
+  startup_grace: 60         # 服務啟動時已停著的車不發「無法辨識」通知
+  unidentified_after: 120   # 停妥多久仍讀不到車牌才通知「無法辨識」(秒)
+  unidentified_cooldown: 86400  # 同一位置「無法辨識」通知的冷卻時間 (秒)
+
+# 外觀樣本收集 (data/gallery/): 供日後車輛外觀辨識
+gallery:
+  enabled: true
+  interval: 300             # 同一台停妥車輛每隔幾秒存一張
+  max_per_track: 6          # 每次停車最多存幾張
+  max_per_plate: 300        # 每個車號最多保留幾張 (超過刪最舊)
+  save_others: true         # 非白名單車輛也存 (日後評估誤認率用)
+
+cameras:
+  - name: outside_1
+    url: "http://camera-host:9084/"
+    process_fps: 1
+    # 電子圍籬: 紅線右側停車區, 車牌中心在多邊形內才辨識 (座標為畫面比例 0~1)
+    zone: [[0.14, 1.0], [0.905, 0.155], [1.0, 0.075], [1.0, 1.0]]
+    dwell_seconds: 10     # 車牌在圍籬內靜止超過幾秒才辨識 (排除路過車輛)
+
+  - name: outside_2
+    url: "http://camera-host:9085/"
+    process_fps: 1
+    # 旋轉鏡頭 (行人追蹤): 只有轉回原位時才辨識.
+    # 原位參考畫面: 在網頁上鏡頭停在原位時按「設為原位參考」(建議白天、夜間各存一張)
+    rotating: true
+    # 電子圍籬: 紅線右側 (座標以原位參考畫面為準, 畫面比例 0~1)
+    zone: [[0.19, 1.0], [0.78, 0.2], [0.83, 0.13], [1.0, 0.13], [1.0, 1.0]]
+    dwell_seconds: 10
+
+  - name: garage
+    url: "http://camera-host:9081/"
+    process_fps: 0.5
+    vehicle_model: yolov8n.onnx   # 室內機車較小, 用 640 模型
+    vehicle_pad: 0.0
+    notify_unidentified: false    # 室內車庫的自家機車常拍不到車牌, 不通知「無法辨識」(仍記錄)
+    zone: null            # 不設圍籬, 全畫面辨識
+    dwell_seconds: 3

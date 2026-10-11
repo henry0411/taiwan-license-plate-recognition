@@ -1,0 +1,19 @@
+# 車牌白名單 / plate whitelist (修改後自動生效, 不需重啟 / reloaded automatically)
+# 辨識到白名單車輛時訊息標示「✅ 白名單車輛」, 其他車輛標示「⚠️ 非白名單車輛」
+# 白名單車輛確認後, 外觀樣本存於 data/gallery/<車號>/
+
+# 白名單車輛是否也要發通知 (false = 只通知外來車輛)
+notify_whitelisted: true
+
+# 白名單比對寬容度: 白名單車號的機率 >= 最佳辨識結果機率 x 此值, 即視為該白名單車輛
+# (夜間/模糊時個別字元容易誤讀, 例如 R 讀成 8). 越低越寬鬆.
+match_ratio: 0.85
+
+plates:
+  # 以下為範例, 請換成自己的車牌 / examples, replace with your own plates
+  - plate: ABC-1234
+    name: "my car"
+    type: car
+  # - plate: 123-ABC
+  #   name: "my scooter"
+  #   type: motorcycle

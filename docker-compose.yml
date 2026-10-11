@@ -1,0 +1,25 @@
+services:
+  lpr:
+    build:
+      context: .
+      args:
+        GPU: ${GPU:-0}
+    image: lpr:${LPR_TAG:-cpu}
+    container_name: lpr
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Taipei
+    ports:
+      - "8091:8091"
+    volumes:
+      - ./app:/app:ro          # 程式碼 (修改後 docker compose restart 即生效)
+      - ./config:/config:ro
+      - ./data:/data
+    # GPU 版本: 取消以下註解, 並以 GPU=1 LPR_TAG=gpu docker compose up -d --build 啟動
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
