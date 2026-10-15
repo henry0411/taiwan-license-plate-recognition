@@ -22,7 +22,7 @@ from fast_alpr.default_detector import DefaultDetector
 
 from home import HomeCheck
 from vehicle import VehicleDetector
-from vehicles import TYPE_ZH, Gallery, VehicleTracker, zone_overlap
+from vehicles import TYPE_ZH, Gallery, VehicleTracker, inside, zone_overlap
 from notify import SynologyChat
 from ocr import PlateOCR
 from tw_plate import Decoder, plain
@@ -202,6 +202,7 @@ class CameraWorker(threading.Thread):
         super().__init__(daemon=True, name=f"cam-{cam['name']}")
         self.cam, self.cfg = cam, cfg
         self.name_ = cam["name"]
+        self.label = cam.get("label") or self.name_   # 顯示名稱 (通知訊息 / 網頁)
         self.reader = MjpegReader(self.name_, cam["url"], 0.8 / cam.get("process_fps", 1))
         self.models, self.chat, self.whitelist, self.gallery = models, chat, whitelist, gallery
         self.cooldowns = cooldowns
@@ -217,6 +218,12 @@ class CameraWorker(threading.Thread):
         self.moto = cam.get("include_motorcycle_formats", cfg["include_motorcycle_formats"])
         self.zone_norm = np.array(cam["zone"], np.float32) if cam.get("zone") else None
         self.zone_px = None     # 本張畫面的圍籬 (像素座標, 旋轉鏡頭會依原位比對結果校正)
+        # 排除區 (例如水溝蓋): 車框大部分落在其中的偵測結果直接忽略
+        self.ignore_norm = [np.array(z, np.float32) for z in cam.get("ignore") or []]
+        self.ignore_px = []
+        self.parked_spots = []  # 進車通知: 最近有車停著的位置 [(cx, cy, 時間)] (畫面比例)
+        self.motion_times = []  # 進車通知: 畫面有明顯局部變化 (人/車移動) 的時間
+        self.last_good, self.offline_alerted = time.time(), False
         # 旋轉鏡頭: 只有轉回原位時才辨識
         self.home = HomeCheck(DATA_DIR / "home" / self.name_, cam.get("home_min_inliers", 20),
                               cam.get("home_max_shift", 0.08)) if cam.get("rotating") else None
@@ -244,9 +251,11 @@ class CameraWorker(threading.Thread):
                 self.home_status = f"非原位 (比對 {n}) - 暫停辨識"
                 return False
             self.home_status = f"原位 (比對 {n})"
-            if zone is not None:
-                zone = cv2.perspectiveTransform(zone.reshape(-1, 1, 2), H).reshape(-1, 2)
-        self.zone_px = None if zone is None else (zone * [w, h]).astype(np.float32)
+            warp = lambda z: cv2.perspectiveTransform(z.reshape(-1, 1, 2), H).reshape(-1, 2)  # noqa: E731
+        else:
+            warp = lambda z: z  # noqa: E731
+        self.zone_px = None if zone is None else (warp(zone) * [w, h]).astype(np.float32)
+        self.ignore_px = [(warp(z) * [w, h]).astype(np.float32) for z in self.ignore_norm]
         return True
 
     def update_tracks(self, boxes, now):
@@ -311,6 +320,24 @@ class CameraWorker(threading.Thread):
         cv2.imwrite(str(SNAP_DIR / fname), snap)
         return fname
 
+    def check_offline(self, now):
+        """超過 offline_alert 秒沒有正常畫面 (斷線 / 灰色「CONNECTION TO CAMERA LOST」畫面) 通知一次."""
+        limit = self.cfg.get("camera_offline_alert", 600)
+        if not limit or self.offline_alerted or now - self.last_good < limit:
+            return
+        self.offline_alerted = True
+        log.warning("[%s] 鏡頭超過 %d 分鐘沒有畫面", self.name_, limit // 60)
+        self._send_text(f"⚠️ 鏡頭斷線：{self.label}\n超過 {limit // 60} 分鐘沒有畫面，請檢查鏡頭電源/網路")
+
+    @property
+    def status(self):
+        if self.offline_alerted:
+            return "⚠️ 鏡頭斷線"
+        return self.home_status
+
+    def _send_text(self, text):
+        threading.Thread(target=self.chat.send, args=(text, None), daemon=True).start()
+
     def _send(self, text, fname):
         base = self.cfg.get("snapshot_base_url")
         file_url = f"{base.rstrip('/')}/snapshots/{fname}" if base else None
@@ -337,7 +364,7 @@ class CameraWorker(threading.Thread):
             return
         head = (f"✅ 白名單車輛：*{plate}*" + (f"（{entry['name']}）" if entry.get("name") else "")
                 if entry else f"⚠️ 非白名單車輛：*{plate}*")
-        lines = [head, f"📷 鏡頭：{self.name_}", f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
+        lines = [head, f"📷 鏡頭：{self.label}", f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
                  f"🎯 信心：{conf:.0%}（綜合 {reads} 張畫面）"]
         if vehicle is not None and plate_box is None:
             lines.append("ℹ️ 車牌於駛入時辨識，停妥後已不在畫面中")
@@ -362,7 +389,7 @@ class CameraWorker(threading.Thread):
         self._send("\n".join([
             "❓ 有車輛停入，但無法辨識車牌",
             f"🚗 類型：{TYPE_ZH.get(v.type_name, v.type_name)}",
-            f"📷 鏡頭：{self.name_}",
+            f"📷 鏡頭：{self.label}",
             f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}（已停 {minutes:.0f} 分鐘）",
         ]), fname)
 
@@ -381,6 +408,9 @@ class CameraWorker(threading.Thread):
         # 畫面幾乎沒變 (停車場多數時間如此) -> 略過偵測, 省 CPU; 每隔 static_refresh 秒仍完整處理一次
         thumb = cv2.cvtColor(cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
         changed = 1.0 if self.prev_thumb is None else float((cv2.absdiff(thumb, self.prev_thumb) > 12).mean())
+        # 局部變化才算有東西在動; 整個畫面都變 (日夜模式切換/開燈) 不算
+        if 0.02 <= changed < 0.6 and self.prev_thumb is not None:
+            self.motion_times = [t for t in self.motion_times if now - t < 900] + [now]
         if changed < self.cfg.get("static_change", 0.005) and now - self.last_full < self.cfg.get("static_refresh", 10):
             return
         self.prev_thumb, self.last_full = thumb, now
@@ -438,13 +468,25 @@ class CameraWorker(threading.Thread):
 
         if vehicle_frame:
             self.check_vehicles(frame, now)
+            if self.cam.get("notify_parked"):
+                self.mark_parked_spots(frame, now)
         self.annotate(frame, now)
 
     def update_vehicles(self, frame, now):
         h, w = frame.shape[:2]
-        min_area = self.vcfg["min_area"] * w * h
+        min_area = self.cam.get("vehicle_min_area", self.vcfg["min_area"]) * w * h
         dets = [d for d in self.vehicle_det.detect(frame, self.cam.get("vehicle_classes"))
-                if (d[2] - d[0]) * (d[3] - d[1]) >= min_area and d[4] >= self.vcfg["conf"]]
+                if (d[2] - d[0]) * (d[3] - d[1]) >= min_area and d[4] >= self.cam.get("vehicle_conf", self.vcfg["conf"])
+                and not any(zone_overlap(d[:4], z) >= 0.5 for z in self.ignore_px)]
+        # 一個框同時包住兩台以上其他車輛 (把相鄰的車併成一台的誤判) -> 忽略
+        dets = [d for d in dets if sum(inside(e[:4], d[:4]) >= 0.7 for e in dets if e is not d) < 2]
+        # 小框幾乎落在另一台同類、信心較高的車框內 (同一台車的局部) -> 忽略小框
+        dets = [d for d in dets if not any(e is not d and e[5] == d[5] and e[4] > d[4] and inside(d[:4], e[:4]) >= 0.8
+                                           for e in dets)]
+        # 一個大框幾乎包住另一台信心較高的車 (同一台車多框出一截) -> 忽略大框
+        area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
+        dets = [d for d in dets if not any(e is not d and e[4] > d[4] and inside(e[:4], d[:4]) >= 0.8
+                                           and area(d) >= 1.5 * area(e) for e in dets)]
         startup = now - self.started < self.vcfg["startup_grace"]
         self.vehicles.update(dets, now, startup)
         for v in self.vehicles.tracks:
@@ -466,6 +508,8 @@ class CameraWorker(threading.Thread):
                                   if t.last_seen == now and t.vehicle is v and t.result), None)
                 self.notify_plate(frame, v.plate, v.plate_conf, v.plate_entry, v.plate_reads, now,
                                   plate_box=plate_box, vehicle=v)
+            elif self.cam.get("notify_parked"):
+                self.check_arrival(frame, v, now)
             elif (not v.plate and not v.unidentified_notified and not v.startup
                   and now - v.parked_since >= self.vcfg["unidentified_after"]):
                 v.unidentified_notified = True
@@ -479,12 +523,59 @@ class CameraWorker(threading.Thread):
                     self.gallery.save(frame, v.box, self.name_, v.plate, v.plate_entry is not None,
                                       v.plate_conf, v.type_name)
 
+    def check_arrival(self, frame, v, now):
+        """進車通知: 停妥一段時間後傳照片. 同一位置最近一直有車 (同一台車偵測框跳動/重新追蹤) 不重複通知."""
+        if v.arrival_done or v.last_seen != now:
+            return
+        h, w = frame.shape[:2]
+        cx, cy = (v.box[0] + v.box[2]) / 2 / w, (v.box[1] + v.box[3]) / 2 / h
+        rearm = self.cam.get("parked_rearm_seconds", 600)
+        self.parked_spots = [s for s in self.parked_spots if now - s[2] < rearm]
+        near = [i for i, (x, y, _) in enumerate(self.parked_spots) if ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 < 0.08]
+        if near or v.startup or v.plate:
+            v.arrival_done = True    # 原本就停著的車 / 已讀到車牌 (車牌通知已附照片)
+        elif now - v.parked_since >= self.cam.get("parked_notify_after", 30) and v.hits >= 5:
+            v.arrival_done = True
+            # 停入前後要有畫面移動 (車輛駛入/牽入); 原本就停著、因光線變亮才偵測到的車不通知
+            if any(v.first_seen - 180 <= t <= v.parked_since for t in self.motion_times):
+                self.notify_arrival(frame, v)
+            else:
+                log.info("[%s] 車輛 #%d (%s) 停入前畫面無移動, 視為原本就停著, 不通知", self.name_, v.id, v.type_name)
+        for i in near:
+            self.parked_spots[i] = (cx, cy, now)
+        if v.arrival_done and not near:
+            self.parked_spots.append((cx, cy, now))
+
+    def notify_arrival(self, frame, v):
+        stamp = datetime.now()
+        fname = self._snapshot(frame, [(v.box, v.type_name, (255, 160, 0))], stamp, "arrival")
+        log.info("[%s] 🚗 車輛 #%d (%s) 停入 -> %s", self.name_, v.id, v.type_name, fname)
+        self._send("\n".join([
+            f"🚗 {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停入",
+            f"📷 鏡頭：{self.label}",
+            f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
+        ]), fname)
+
+    def mark_parked_spots(self, frame, now):
+        """已停妥的車 (不論是否已通知) 都更新所在位置, 讓同一台車的重複追蹤不再通知."""
+        h, w = frame.shape[:2]
+        for v in self.vehicles.tracks:
+            if v.parked_since is None or v.last_seen != now or not v.arrival_done:
+                continue
+            cx, cy = (v.box[0] + v.box[2]) / 2 / w, (v.box[1] + v.box[3]) / 2 / h
+            for i, (x, y, _) in enumerate(self.parked_spots):
+                if ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 < 0.08:
+                    self.parked_spots[i] = (x, y, now)
+
     def annotate(self, frame, now):
         img = frame.copy()
         h, w = img.shape[:2]
         lw = max(1, w // 600)
         if self.zone_px is not None and self.active:
             cv2.polylines(img, [self.zone_px.astype(np.int32)], True, (0, 255, 255), lw + 1)
+        if self.active:
+            for z in self.ignore_px:
+                cv2.polylines(img, [z.astype(np.int32)], True, (0, 0, 200), lw)
         dwell = self.cam.get("dwell_seconds", 10)
         for v in self.vehicles.tracks:
             if now - v.last_seen > self.vcfg["interval"] * 2.5:
@@ -521,10 +612,17 @@ class CameraWorker(threading.Thread):
                 if frame[h // 10:h * 9 // 10:8, ::8].std() < 3:
                     frame = None
             if frame is not None:
+                self.last_good = start
+                if self.offline_alerted:
+                    self.offline_alerted = False
+                    log.info("[%s] 鏡頭恢復連線", self.name_)
+                    self._send_text(f"✅ 鏡頭恢復連線：{self.label}")
                 try:
                     self.process(frame, start)
                 except Exception:  # noqa: BLE001
                     log.exception("[%s] 處理錯誤", self.name_)
+            else:
+                self.check_offline(start)
             time.sleep(max(0.05, period - (time.time() - start)))
 
 
@@ -539,18 +637,16 @@ class Handler(SimpleHTTPRequestHandler):
     def do_GET(self):
         if self.path in ("/", "/index.html"):
             imgs = ""
-            for n in sorted(LIVE):
-                w = WORKERS.get(n)
-                extra = ""
+            for n, w in WORKERS.items():  # 依設定檔順序
+                extra = f' <span data-status="{n}">{html_escape(w.status) if w else ""}</span>'
                 if w is not None and w.home is not None:
-                    extra = (f' <span data-status="{n}">{html_escape(w.home_status)}</span> '
-                             f'<button onclick="if(confirm(\'確認 {n} 目前在原位? 將以目前畫面作為原位參考\'))'
+                    extra += (f' <button onclick="if(confirm(\'確認 {n} 目前在原位? 將以目前畫面作為原位參考\'))'
                              f'fetch(\'/home/{n}\',{{method:\'POST\'}}).then(r=>r.text()).then(alert)">設為原位參考</button>'
                              f' <a href="/home/{n}/">參考畫面</a>')
-                imgs += f'<h3>{n}{extra}</h3><img src="/live/{n}.jpg" data-cam="{n}" style="max-width:100%">'
+                imgs += f'<h3>{html_escape(w.label if w else n)} <small>({n})</small>{extra}</h3><img src="/live/{n}.jpg" data-cam="{n}" style="max-width:100%">'
 
             html = (f"<html><head><meta charset='utf-8'><title>LPR</title></head><body style='font-family:sans-serif'>"
-                    f"<h2>車牌辨識即時畫面</h2><p>黃框=電子圍籬 橘=圍籬內等待中 綠=已辨識 灰=圍籬外 | "
+                    f"<h2>車牌辨識即時畫面</h2><p>黃框=電子圍籬 橘=圍籬內等待中 綠=已辨識 灰=圍籬外 紅=排除區(水溝蓋等) | "
                     f"<a href='/snapshots/'>歷史截圖</a></p>{imgs}"
                     "<script>setInterval(()=>document.querySelectorAll('img[data-cam]').forEach("
                     "i=>i.src='/live/'+i.dataset.cam+'.jpg?'+Date.now()),1000);"
@@ -558,7 +654,7 @@ class Handler(SimpleHTTPRequestHandler):
                     "'[data-status]').forEach(e=>e.textContent=s[e.dataset.status]||'')),2000)</script></body></html>")
             return self._send(html.encode(), "text/html; charset=utf-8")
         if self.path == "/status.json":
-            body = json.dumps({n: w.home_status for n, w in WORKERS.items()}, ensure_ascii=False)
+            body = json.dumps({n: w.status for n, w in WORKERS.items()}, ensure_ascii=False)
             return self._send(body.encode(), "application/json; charset=utf-8")
         if self.path.startswith("/live/"):
             name = self.path[6:].split(".jpg")[0]
@@ -608,7 +704,8 @@ def build_models(cfg):
                    device="cuda" if "CUDAExecutionProvider" in prov else "cpu", sess_options=opts())
     vehicle_models = {}
     model_dir = Path(os.environ.get("MODEL_DIR", "/models"))
-    vconf = cfg.get("vehicle", {}).get("conf", 0.2)
+    # 模型本身用所有鏡頭中最低的門檻, 各鏡頭再依自己的 vehicle_conf 篩選
+    vconf = min([cfg.get("vehicle", {}).get("conf", 0.2)] + [c["vehicle_conf"] for c in cfg["cameras"] if "vehicle_conf" in c])
 
     def vehicle(name, pad):
         """車輛偵測模型 (同一模型/留白設定共用)."""

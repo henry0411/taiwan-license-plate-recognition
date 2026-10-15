@@ -27,6 +27,7 @@ detection:
   static_refresh: 10    # 靜止畫面每隔幾秒仍完整處理一次
   track_lost_seconds: 30      # 車牌消失多久後視為離開
   plate_cooldown_seconds: 21600  # 同一鏡頭同一車牌再次通知的冷卻時間 (6 小時)
+  camera_offline_alert: 600   # 鏡頭超過幾秒沒有畫面就通知「鏡頭斷線」(0 = 不通知)
 
 # 整台車輛偵測/追蹤: 車牌駛入時讀到即延續車號; 停妥後一直讀不到車牌則通知「無法辨識」
 vehicle:
@@ -51,14 +52,22 @@ gallery:
   save_others: true         # 非白名單車輛也存 (日後評估誤認率用)
 
 cameras:
+  # name: 內部代號 (截圖檔名/原位參考資料夾, 請勿更改); label: 通知訊息與網頁上顯示的名稱
   - name: outside_1
+    label: 車庫外
     url: "http://camera-host:9084/"
     process_fps: 1
     # 電子圍籬: 紅線右側停車區, 車牌中心在多邊形內才辨識 (座標為畫面比例 0~1)
     zone: [[0.14, 1.0], [0.905, 0.155], [1.0, 0.075], [1.0, 1.0]]
+    # 排除區: 車框一半以上落在其中的偵測結果忽略 (人行道上的水溝蓋常被誤判為車輛)
+    ignore:
+      - [[0.27, 0.84], [0.47, 0.84], [0.47, 1.0], [0.27, 1.0]]
+      - [[0.71, 0.35], [0.84, 0.35], [0.84, 0.49], [0.71, 0.49]]
+      - [[0.87, 0.16], [0.96, 0.16], [0.96, 0.25], [0.87, 0.25]]
     dwell_seconds: 10     # 車牌在圍籬內靜止超過幾秒才辨識 (排除路過車輛)
 
   - name: outside_2
+    label: 車庫外旋轉鏡頭
     url: "http://camera-host:9085/"
     process_fps: 1
     # 旋轉鏡頭 (行人追蹤): 只有轉回原位時才辨識.
@@ -66,13 +75,25 @@ cameras:
     rotating: true
     # 電子圍籬: 紅線右側 (座標以原位參考畫面為準, 畫面比例 0~1)
     zone: [[0.19, 1.0], [0.78, 0.2], [0.83, 0.13], [1.0, 0.13], [1.0, 1.0]]
+    # 排除區 (座標以原位參考畫面為準): 紅線旁的兩個水溝蓋
+    ignore:
+      - [[0.55, 0.45], [0.70, 0.45], [0.70, 0.63], [0.55, 0.63]]
+      - [[0.71, 0.28], [0.80, 0.28], [0.80, 0.37], [0.71, 0.37]]
     dwell_seconds: 10
 
   - name: garage
+    label: 車庫內
     url: "http://camera-host:9081/"
     process_fps: 0.5
     vehicle_model: yolov8n.onnx   # 室內機車較小, 用 640 模型
     vehicle_pad: 0.0
     notify_unidentified: false    # 室內車庫的自家機車常拍不到車牌, 不通知「無法辨識」(仍記錄)
+    # 進車通知: 車輛停妥 parked_notify_after 秒後傳照片 (讀到車牌時改發車牌通知);
+    # 同一位置 parked_rearm_seconds 秒內一直有車停著則不重複通知 (車離開超過此時間後再停入才通知)
+    notify_parked: true
+    parked_notify_after: 90        # 停妥 90 秒後才通知 (排除戴安全帽暖車準備騎出的情況)
+    parked_rearm_seconds: 600
+    vehicle_conf: 0.12            # 夜間紅外線畫面機車信心常只有 0.13~0.36, 車庫內門檻放寬 (其他鏡頭用 vehicle.conf)
+    vehicle_min_area: 0.04        # 車庫內車輛都很近, 小框多半是被擋住的局部 (座墊/車尾) 誤判
     zone: null            # 不設圍籬, 全畫面辨識
     dwell_seconds: 3

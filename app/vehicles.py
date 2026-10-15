@@ -27,6 +27,13 @@ def contains(box, pt):
     return box[0] <= pt[0] <= box[2] and box[1] <= pt[1] <= box[3]
 
 
+def inside(a, b):
+    """框 a 落在框 b 內的面積比例."""
+    ix = max(0.0, min(a[2], b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[3], b[3]) - max(a[1], b[1]))
+    return ix * iy / max(1.0, (a[2] - a[0]) * (a[3] - a[1]))
+
+
 def zone_overlap(box, zone):
     """車框落在圍籬內的面積比例 (圍籬須為凸多邊形). 無圍籬時為 1."""
     if zone is None:
@@ -53,6 +60,8 @@ class VehicleTrack:
         self.notified_plate = None
         self.unidentified_notified = False
         self.last_sample, self.samples = 0.0, 0
+        self.arrival_done = False     # 進車通知已處理
+        self.hits = 1                 # 被偵測到的次數 (排除一閃即逝的誤判)
 
     @property
     def type_name(self):
@@ -99,6 +108,7 @@ class VehicleTracker:
 
     def _hit(self, t, d, now):
         t.box, t.conf, t.cls, t.last_seen = d[:4], d[4], d[5], now
+        t.hits += 1
         (cx, cy), (sx, sy) = ((t.box[0] + t.box[2]) / 2, (t.box[1] + t.box[3]) / 2), \
             ((t.still_box[0] + t.still_box[2]) / 2, (t.still_box[1] + t.still_box[3]) / 2)
         if ((cx - sx) ** 2 + (cy - sy) ** 2) ** 0.5 > self.still_ratio * max(1.0, t.box[2] - t.box[0]):
