@@ -40,7 +40,8 @@ vehicle:
   lost_seconds: 60          # 偵測不到多久視為離開
   relink_seconds: 600       # 離開後多久內在同位置再出現, 視為同一台車 (保留車號)
   startup_grace: 60         # 服務啟動時已停著的車不發「無法辨識」通知
-  unidentified_after: 120   # 停妥多久仍讀不到車牌才通知「無法辨識」(秒)
+  unidentified_after: 120   # 停妥滿幾秒才發通知 (秒). 期間持續讀車牌; 停妥後讀不到則採用駛入過程中讀到的車牌, 都沒有才通知「無法辨識」
+  approach_seconds: 300     # 車輛出現前多少秒內 (任一鏡頭) 讀到的車牌, 可作為該車的車號
   unidentified_cooldown: 86400  # 同一位置「無法辨識」通知的冷卻時間 (秒)
 
 # 外觀樣本收集 (data/gallery/): 供日後車輛外觀辨識
@@ -88,10 +89,9 @@ cameras:
     vehicle_model: yolov8n.onnx   # 室內機車較小, 用 640 模型
     vehicle_pad: 0.0
     notify_unidentified: false    # 室內車庫的自家機車常拍不到車牌, 不通知「無法辨識」(仍記錄)
-    # 進車通知: 車輛停妥 parked_notify_after 秒後傳照片 (讀到車牌時改發車牌通知);
+    # 進車通知: 車輛停妥 vehicle.unidentified_after 秒 (2 分鐘) 後傳照片 (駛入時有讀到車牌則改發車牌通知);
     # 同一位置 parked_rearm_seconds 秒內一直有車停著則不重複通知 (車離開超過此時間後再停入才通知)
     notify_parked: true
-    parked_notify_after: 90        # 停妥 90 秒後才通知 (排除戴安全帽暖車準備騎出的情況)
     parked_rearm_seconds: 600
     vehicle_conf: 0.12            # 夜間紅外線畫面機車信心常只有 0.13~0.36, 車庫內門檻放寬 (其他鏡頭用 vehicle.conf)
     vehicle_min_area: 0.04        # 車庫內車輛都很近, 小框多半是被擋住的局部 (座墊/車尾) 誤判

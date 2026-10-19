@@ -149,6 +149,39 @@ class Cooldowns:
             return True
 
 
+# ---------------------------------------------------------------- 駛入過程中讀到的車牌
+class RecentPlates:
+    """各鏡頭在車輛駛入/經過時確認的車牌. 車輛停妥後讀不到車牌時, 由此找出駛入時讀到的車號."""
+
+    def __init__(self, keep_seconds=1800):
+        self.items, self.keep, self.lock = [], keep_seconds, threading.Lock()
+
+    def add(self, **rec):
+        with self.lock:
+            now = rec["time"]
+            self.items = [r for r in self.items if now - r["time"] < self.keep]
+            same = next((r for r in self.items if r["plate"] == rec["plate"] and not r["claimed"]), None)
+            if same:  # 同一車牌重複讀到: 更新時間, 保留信心較高的紀錄
+                rec["conf"] = max(rec["conf"], same["conf"])
+                self.items.remove(same)
+            self.items.append(dict(rec, claimed=False))
+
+    def claim(self, plate):
+        with self.lock:
+            for r in self.items:
+                if r["plate"] == plate:
+                    r["claimed"] = True
+
+    def candidates(self, since, until):
+        """時間範圍內未被認領的車牌, 白名單優先, 其次越接近停妥時間越前面."""
+        with self.lock:
+            c = [r for r in self.items if since <= r["time"] <= until and not r["claimed"]]
+        return sorted(c, key=lambda r: (r["entry"] is None, until - r["time"]))
+
+
+RECENT = RecentPlates()
+
+
 # ---------------------------------------------------------------- 白名單
 class Whitelist:
     """白名單 YAML, 檔案修改後自動重新載入 (不需重啟)."""
@@ -343,7 +376,7 @@ class CameraWorker(threading.Thread):
         file_url = f"{base.rstrip('/')}/snapshots/{fname}" if base else None
         threading.Thread(target=self.chat.send, args=(text, file_url), daemon=True).start()
 
-    def notify_plate(self, frame, plate, conf, entry, reads, now, plate_box=None, vehicle=None):
+    def notify_plate(self, frame, plate, conf, entry, reads, now, plate_box=None, vehicle=None, source=None):
         key = f"{self.name_}|{plate}"
         if not self.cooldowns.hit(key, now, self.cfg["plate_cooldown_seconds"]):
             log.info("[%s] %s 冷卻中, 不重複通知", self.name_, plate)
@@ -357,6 +390,8 @@ class CameraWorker(threading.Thread):
         elif vehicle is not None:
             boxes[0] = (vehicle.box, plate, (0, 255, 0))
         fname = self._snapshot(frame, boxes, stamp, plate)
+        if source is not None and source.get("fname"):
+            fname = source["fname"]  # 停妥後看不到車牌: 附上讀到車牌當下的畫面
         status = f"白名單 {entry.get('name') or ''}".strip() if entry else "非白名單"
         log.info("[%s] ✅ 確認車牌 %s [%s] (畫面數 %d, 信心 %.2f)%s -> %s", self.name_, plate, status, reads, conf,
                  " (車號延續, 停妥時車牌未入鏡)" if vehicle is not None and plate_box is None else "", fname)
@@ -366,7 +401,12 @@ class CameraWorker(threading.Thread):
                 if entry else f"⚠️ 非白名單車輛：*{plate}*")
         lines = [head, f"📷 鏡頭：{self.label}", f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
                  f"🎯 信心：{conf:.0%}（綜合 {reads} 張畫面）"]
-        if vehicle is not None and plate_box is None:
+        if source is not None:
+            ago = (now - source["time"]) / 60
+            lines.append(f"ℹ️ 車牌於駛入過程中由「{source['label']}」辨識（停妥前約 {ago:.0f} 分鐘），停妥後車牌不在畫面中")
+            if not entry:
+                lines.append("⚠️ 非白名單車牌為推測對應，可能是同時經過的其他車輛")
+        elif vehicle is not None and plate_box is None:
             lines.append("ℹ️ 車牌於駛入時辨識，停妥後已不在畫面中")
         self._send("\n".join(lines), fname)
 
@@ -396,14 +436,13 @@ class CameraWorker(threading.Thread):
     # ------------------------------------------------------------ 主流程
     def process(self, frame, now):
         self.last_frame = frame
-        self.active = self.update_zone(frame)
-        if not self.active:
-            if self.tracks or self.vehicles.tracks:
-                log.info("[%s] 鏡頭離開原位, 暫停辨識", self.name_)
-            self.tracks = []  # 轉回原位後重新追蹤 / 計算靜止時間
+        was_active, self.active = self.active, self.update_zone(frame)
+        if was_active != self.active:
+            # 旋轉鏡頭轉動: 畫面位置都變了, 重新追蹤 (離開原位時仍會讀車牌, 只是不判斷停車)
+            if not self.active:
+                log.info("[%s] 鏡頭離開原位, 暫停停車判斷 (仍記錄車牌)", self.name_)
+            self.tracks = []
             self.vehicles = VehicleTracker(self.vcfg["lost_seconds"], self.vcfg["relink_seconds"])
-            self.annotate(frame, now)
-            return
 
         # 畫面幾乎沒變 (停車場多數時間如此) -> 略過偵測, 省 CPU; 每隔 static_refresh 秒仍完整處理一次
         thumb = cv2.cvtColor(cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
@@ -415,8 +454,8 @@ class CameraWorker(threading.Thread):
             return
         self.prev_thumb, self.last_full = thumb, now
 
-        # 車輛偵測 (較耗時, 依間隔執行)
-        if now - self.last_vehicle_run >= self.vcfg["interval"]:
+        # 車輛偵測 (較耗時, 依間隔執行; 旋轉鏡頭不在原位時不做)
+        if self.active and now - self.last_vehicle_run >= self.vcfg["interval"]:
             self.last_vehicle_run = now
             self.update_vehicles(frame, now)
             vehicle_frame = True
@@ -437,13 +476,15 @@ class CameraWorker(threading.Thread):
             if t.result:
                 if v is not None:
                     v.set_plate(*t.result, t.reads)
-                elif self.in_zone(t.box) and now - t.still_since >= dwell and t.notified is None and vehicle_frame:
+                elif (self.active and self.in_zone(t.box) and now - t.still_since >= max(dwell, self.notify_after)
+                      and t.notified is None and vehicle_frame):
                     # 偵測不到整台車 (例如被切掉太多): 以車牌本身停留判斷
                     t.notified = t.result[0]
                     self.notify_plate(frame, *t.result, t.reads, now, plate_box=t.box)
                 continue
-            # 車牌在圍籬內, 或所屬車輛在圍籬內 -> 駛入過程中就開始辨識 (不必等停妥)
-            if not (self.in_zone(t.box) or (v is not None and v.in_zone)):
+            # 預設畫面中所有車牌都讀 (駛入途中車牌常還在圍籬外); read_all_plates: false 則只讀圍籬內
+            if (self.active and not self.cam.get("read_all_plates", True)
+                    and not (self.in_zone(t.box) or (v is not None and v.in_zone))):
                 continue
             # 嘗試多次仍無法確認 (例如角度太斜) -> 降低頻率, 省 CPU
             interval = (self.cfg["ocr_interval"] if t.attempts < self.cfg.get("ocr_max_attempts", 20)
@@ -461,8 +502,11 @@ class CameraWorker(threading.Thread):
             result = self.judge(t)
             if result:
                 t.result = result
-                log.info("[%s] 車牌 #%d 辨識為 %s (%.2f)%s", self.name_, t.id, result[0], result[1],
-                         f" -> 車輛 #{v.id}" if v is not None else "")
+                log.info("[%s] 📝 車牌 #%d 辨識為 %s (%.2f)%s%s", self.name_, t.id, result[0], result[1],
+                         f" -> 車輛 #{v.id}" if v is not None else "", "" if self.active else " (鏡頭不在原位)")
+                fname = self._snapshot(frame, [(t.box, result[0], (0, 255, 0))], datetime.now(), f"read_{result[0]}")
+                RECENT.add(plate=result[0], conf=result[1], entry=result[2], reads=t.reads, time=now,
+                           camera=self.name_, label=self.label, fname=fname)
                 if v is not None:
                     v.set_plate(*result, t.reads)
 
@@ -502,16 +546,22 @@ class CameraWorker(threading.Thread):
                 v.parked_since = now
                 log.info("[%s] 車輛 #%d (%s) 停妥%s", self.name_, v.id, v.type_name,
                          f", 車號 {v.plate}" if v.plate else "")
-            if v.plate and v.notified_plate != v.plate:
+            if now - v.parked_since < self.notify_after:
+                pass  # 停妥未滿 notify_after 秒先不發 (車號可能還在由駛入過程中的讀取補上)
+            elif v.plate and v.notified_plate != v.plate:
                 v.notified_plate = v.plate
+                RECENT.claim(v.plate)
                 plate_box = next((t.box for t in self.tracks
                                   if t.last_seen == now and t.vehicle is v and t.result), None)
                 self.notify_plate(frame, v.plate, v.plate_conf, v.plate_entry, v.plate_reads, now,
-                                  plate_box=plate_box, vehicle=v)
+                                  plate_box=plate_box, vehicle=v, source=v.plate_source)
             elif self.cam.get("notify_parked"):
                 self.check_arrival(frame, v, now)
-            elif (not v.plate and not v.unidentified_notified and not v.startup
-                  and now - v.parked_since >= self.vcfg["unidentified_after"]):
+            elif not v.plate and not v.unidentified_notified and not v.startup:
+                if not v.plate_lookup_done:  # 先找駛入過程中讀到的車牌, 下一輪找到就發車牌通知
+                    v.plate_lookup_done = True
+                    if self.lookup_recent_plate(v, now):
+                        continue
                 v.unidentified_notified = True
                 self.notify_unidentified(frame, v, now)
             # 外觀樣本: 已知車號的停妥車輛, 定時存一張整車裁切圖
@@ -522,6 +572,31 @@ class CameraWorker(threading.Thread):
                 if v.plate_entry or self.cfg["gallery"]["save_others"]:
                     self.gallery.save(frame, v.box, self.name_, v.plate, v.plate_entry is not None,
                                       v.plate_conf, v.type_name)
+
+    @property
+    def notify_after(self):
+        """停妥後幾秒才發通知 (期間持續等待/補上車號)."""
+        return self.cam.get("notify_after", self.vcfg["unidentified_after"])
+
+    def lookup_recent_plate(self, v, now):
+        """停妥車輛讀不到車牌: 找駛入前後 (任一鏡頭) 讀到、尚未被其他車認領的車牌."""
+        window = self.vcfg.get("approach_seconds", 300)
+        types = {"car": "car", "truck": "car", "bus": "car", "motorcycle": "motorcycle"}
+        cands = RECENT.candidates(v.first_seen - window, now)
+        # 白名單有登記車種時, 排除車種不符的 (例如停的是機車, 不配汽車車牌)
+        cands = [r for r in cands if not (r["entry"] and r["entry"].get("type")
+                                          and r["entry"]["type"] != types.get(v.type_name, r["entry"]["type"]))]
+        if not cands:
+            log.info("[%s] 車輛 #%d 停妥, 駛入過程中也沒有讀到車牌", self.name_, v.id)
+            return False
+        r = cands[0]
+        v.set_plate(r["plate"], r["conf"], r["entry"], r["reads"])
+        v.plate_source = r
+        RECENT.claim(r["plate"])
+        log.info("[%s] 車輛 #%d 停妥, 採用 %s 於 %.0f 秒前讀到的車牌 %s%s", self.name_, v.id, r["label"],
+                 now - r["time"], r["plate"], f" (其他候選: {', '.join(c['plate'] for c in cands[1:4])})"
+                 if len(cands) > 1 else "")
+        return True
 
     def check_arrival(self, frame, v, now):
         """進車通知: 停妥一段時間後傳照片. 同一位置最近一直有車 (同一台車偵測框跳動/重新追蹤) 不重複通知."""
@@ -534,11 +609,16 @@ class CameraWorker(threading.Thread):
         near = [i for i, (x, y, _) in enumerate(self.parked_spots) if ((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 < 0.08]
         if near or v.startup or v.plate:
             v.arrival_done = True    # 原本就停著的車 / 已讀到車牌 (車牌通知已附照片)
-        elif now - v.parked_since >= self.cam.get("parked_notify_after", 30) and v.hits >= 5:
+        elif now - v.parked_since >= self.cam.get("parked_notify_after", self.notify_after) and v.hits >= 5:
             v.arrival_done = True
             # 停入前後要有畫面移動 (車輛駛入/牽入); 原本就停著、因光線變亮才偵測到的車不通知
             if any(v.first_seen - 180 <= t <= v.parked_since for t in self.motion_times):
-                self.notify_arrival(frame, v)
+                if self.lookup_recent_plate(v, now):  # 駛入時有讀到車牌 -> 改發車牌通知
+                    v.notified_plate = v.plate
+                    self.notify_plate(frame, v.plate, v.plate_conf, v.plate_entry, v.plate_reads, now,
+                                      vehicle=v, source=v.plate_source)
+                else:
+                    self.notify_arrival(frame, v)
             else:
                 log.info("[%s] 車輛 #%d (%s) 停入前畫面無移動, 視為原本就停著, 不通知", self.name_, v.id, v.type_name)
         for i in near:

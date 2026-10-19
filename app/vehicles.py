@@ -61,6 +61,8 @@ class VehicleTrack:
         self.unidentified_notified = False
         self.last_sample, self.samples = 0.0, 0
         self.arrival_done = False     # 進車通知已處理
+        self.plate_lookup_done = False  # 已查過駛入過程中讀到的車牌
+        self.plate_source = None        # 車號來自駛入過程中的讀取紀錄 (RecentPlates 項目)
         self.hits = 1                 # 被偵測到的次數 (排除一閃即逝的誤判)
 
     @property
