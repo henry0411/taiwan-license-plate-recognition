@@ -22,7 +22,7 @@ from fast_alpr.default_detector import DefaultDetector
 
 from home import HomeCheck
 from vehicle import VehicleDetector
-from vehicles import TYPE_ZH, Gallery, VehicleTracker, inside, zone_overlap
+from vehicles import TYPE_ZH, Gallery, VehicleTracker, inside, ref_edges, region_similarity, zone_overlap
 from notify import SynologyChat
 from ocr import PlateOCR
 from tw_plate import Decoder, plain
@@ -256,6 +256,7 @@ class CameraWorker(threading.Thread):
         self.ignore_px = []
         self.parked_spots = []  # 進車通知: 最近有車停著的位置 [(cx, cy, 時間)] (畫面比例)
         self.motion_times = []  # 進車通知: 畫面有明顯局部變化 (人/車移動) 的時間
+        self.ref_frames = []    # 進車通知: 畫面靜止時的參考畫面 [(時間, 縮小邊緣圖)], 用來比對車框區域停入前是否已有車
         self.last_good, self.offline_alerted = time.time(), False
         # 旋轉鏡頭: 只有轉回原位時才辨識
         self.home = HomeCheck(DATA_DIR / "home" / self.name_, cam.get("home_min_inliers", 20),
@@ -450,6 +451,11 @@ class CameraWorker(threading.Thread):
         # 局部變化才算有東西在動; 整個畫面都變 (日夜模式切換/開燈) 不算
         if 0.02 <= changed < 0.6 and self.prev_thumb is not None:
             self.motion_times = [t for t in self.motion_times if now - t < 900] + [now]
+        if self.cam.get("notify_parked") and self.prev_thumb is not None:
+            if changed >= 0.6:   # 日夜模式切換/開燈: 之前的參考畫面無法比對
+                self.ref_frames = []
+            elif changed < 0.02 and (not self.ref_frames or now - self.ref_frames[-1][0] >= 30):
+                self.ref_frames = [r for r in self.ref_frames if now - r[0] < 1800] + [(now, ref_edges(frame))]
         if changed < self.cfg.get("static_change", 0.005) and now - self.last_full < self.cfg.get("static_refresh", 10):
             return
         self.prev_thumb, self.last_full = thumb, now
@@ -613,7 +619,16 @@ class CameraWorker(threading.Thread):
             v.arrival_done = True
             # 停入前後要有畫面移動 (車輛駛入/牽入); 原本就停著、因光線變亮才偵測到的車不通知
             if any(v.first_seen - 180 <= t <= v.parked_since for t in self.motion_times):
-                if self.lookup_recent_plate(v, now):  # 駛入時有讀到車牌 -> 改發車牌通知
+                # 比對車框區域與停入前的參考畫面: 幾乎一樣 = 原本就停著 (被人/車擋住後重新追蹤), 不通知
+                ref = next((r for r in reversed(self.ref_frames) if r[0] <= v.first_seen - 60), None)
+                sim = region_similarity(ref[1], ref_edges(frame), v.box, frame.shape) if ref else None
+                same = sim is not None and sim >= self.cam.get("arrival_same_similarity", 0.5)
+                log.info("[%s] 車輛 #%d (%s) 停入前後比對: %s%s", self.name_, v.id, v.type_name,
+                         f"相似度 {sim:.2f} ({now - ref[0]:.0f} 秒前畫面)" if sim is not None else "無參考畫面",
+                         ", 視為原本就停著, 不通知" if same else "")
+                if same:
+                    pass
+                elif self.lookup_recent_plate(v, now):  # 駛入時有讀到車牌 -> 改發車牌通知
                     v.notified_plate = v.plate
                     self.notify_plate(frame, v.plate, v.plate_conf, v.plate_entry, v.plate_reads, now,
                                       vehicle=v, source=v.plate_source)

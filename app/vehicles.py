@@ -44,6 +44,29 @@ def zone_overlap(box, zone):
     return float(area) / max(1.0, (x2 - x1) * (y2 - y1))
 
 
+REF_SIZE = (320, 180)
+
+
+def ref_edges(frame):
+    """停入前後比對用的縮小邊緣強度圖 (取對數亮度再算梯度: 鐵捲門開關/陽光照入造成的明暗變化影響小)."""
+    small = cv2.cvtColor(cv2.resize(frame, REF_SIZE, interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    g = np.log1p(cv2.GaussianBlur(small, (3, 3), 0).astype(np.float32))
+    return cv2.magnitude(cv2.Sobel(g, cv2.CV_32F, 1, 0), cv2.Sobel(g, cv2.CV_32F, 0, 1))
+
+
+def region_similarity(ref, cur, box, shape):
+    """車框區域在兩張參考圖中的相似度 (正規化互相關, -1~1). 區域太小回傳 None."""
+    h, w = shape[:2]
+    rw, rh = REF_SIZE
+    x1, y1 = max(0, int(box[0] / w * rw)), max(0, int(box[1] / h * rh))
+    x2, y2 = min(rw, int(box[2] / w * rw + 1)), min(rh, int(box[3] / h * rh + 1))
+    a, b = ref[y1:y2, x1:x2].astype(np.float32), cur[y1:y2, x1:x2].astype(np.float32)
+    if a.size < 100:
+        return None
+    a, b = a - a.mean(), b - b.mean()
+    return float((a * b).sum() / (np.sqrt((a * a).sum() * (b * b).sum()) + 1e-6))
+
+
 class VehicleTrack:
     _ids = itertools.count(1)
 
