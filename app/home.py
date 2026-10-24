@@ -3,6 +3,11 @@
 鏡頭在原位 (或僅輕微偏移) 時回傳參考畫面 -> 目前畫面的 homography, 用來校正電子圍籬;
 鏡頭轉走時回傳 None.
 參考畫面放在 <dir>/*.jpg, 可放多張 (例如白天 / 夜間紅外線各一張), 符合任一張即可.
+
+自動學習: 確認在原位時, 每隔 learn_interval 秒把目前畫面記為「近期原位畫面」(僅存記憶體),
+之後也拿來比對. 停車、日夜光線、下雨等逐漸變化都能跟上, 不必每種情況都手動存參考畫面.
+近期原位畫面都記錄其相對於參考畫面的 homography, 比對結果一律換算回參考畫面座標再檢查偏移量,
+因此不會一次次累積漂移.
 """
 import logging
 import threading
@@ -27,9 +32,12 @@ def _prep(img):
 
 
 class HomeCheck:
-    def __init__(self, ref_dir, min_inliers=20, max_shift=0.08):
+    def __init__(self, ref_dir, min_inliers=20, max_shift=0.08, learn_interval=300, learn_inliers=40, learn_keep=12):
         self.dir = Path(ref_dir)
         self.min_inliers, self.max_shift = min_inliers, max_shift
+        # 近期原位畫面 [(時間, kp, des, 參考 -> 該畫面的 homography)]
+        self.learned, self.last_learn = [], 0.0
+        self.learn_interval, self.learn_inliers, self.learn_keep = learn_interval, learn_inliers, learn_keep
         self.orb = cv2.ORB_create(5000, fastThreshold=10)
         self.matcher = cv2.BFMatcher(cv2.NORM_HAMMING)
         self.refs, self.mtime = [], None
@@ -71,23 +79,25 @@ class HomeCheck:
         if self.cache is not None and now - self.cache[1] < max_age and self.mtime is not None:
             if float(np.abs(thumb - self.cache[0]).mean()) < max_diff and self.dir.stat().st_mtime == self.mtime:
                 return self.cache[2]
-        result = self.match(frame)
+        result = self.match(frame, now)
         self.cache = (thumb, now, result)
         return result
 
-    def match(self, frame):
+    def match(self, frame, now=None):
         """回傳 (參考 -> 目前畫面 的 3x3 homography (正規化座標 0~1), 內點數) 或 (None, 最佳內點數)."""
         with self.lock:
             self._reload()
-            refs = list(self.refs)
-        if not refs:
+            refs = [(rkp, rdes, None) for _, rkp, rdes in self.refs]
+            refs += [(rkp, rdes, base) for _, rkp, rdes, base in self.learned]
+        if not self.refs:
             return None, 0
         kp, des = self._features(frame)
         if des is None or len(kp) < self.min_inliers:
             return None, 0
         best_h, best_h_n, best_n = None, 0, 0
         norm = np.float32(SIZE)
-        for _, rkp, rdes in refs:
+        corners = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]).reshape(-1, 1, 2)
+        for rkp, rdes, base in refs:
             pairs = self.matcher.knnMatch(rdes, des, k=2)
             good = [m for m, *n in pairs if n and m.distance < 0.8 * n[0].distance]
             if len(good) < self.min_inliers:
@@ -100,9 +110,16 @@ class HomeCheck:
             best_n = max(best_n, n)
             if H is None or n < self.min_inliers:
                 continue
-            # 四個角落的平均位移需夠小, 才算「在原位」(只容許輕微偏移)
-            corners = np.float32([[0, 0], [1, 0], [1, 1], [0, 1]]).reshape(-1, 1, 2)
+            if base is not None:  # 近期原位畫面: 換算回參考畫面座標
+                H = H @ base
+            # 四個角落的平均位移 (相對於參考畫面) 需夠小, 才算「在原位」(只容許輕微偏移)
             shift = np.linalg.norm(cv2.perspectiveTransform(corners, H) - corners, axis=2).mean()
             if shift <= self.max_shift and n > best_h_n:
                 best_h, best_h_n = H, n
-        return (best_h, best_h_n) if best_h is not None else (None, best_n)
+        if best_h is None:
+            return None, best_n
+        if now is not None and best_h_n >= self.learn_inliers and now - self.last_learn >= self.learn_interval:
+            with self.lock:
+                self.last_learn = now
+                self.learned = (self.learned + [(now, kp, des, best_h)])[-self.learn_keep:]
+        return best_h, best_h_n

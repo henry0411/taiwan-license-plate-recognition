@@ -8,6 +8,14 @@ synology:
   snapshot_base_url: "http://lpr-host:8091"
   verify_ssl: true
 
+# go2rtc (網路鏡頭 -> RTSP, go2rtc-host): 與鏡頭的連線卡住時 motionEye 只會顯示灰色「UNABLE TO OPEN VIDEO DEVICE」,
+# 重啟 go2rtc 即可恢復. 任一鏡頭斷線超過 restart_after 秒自動重啟 (重啟會讓所有鏡頭中斷約十幾秒);
+# 兩次重啟至少間隔 restart_cooldown 秒, 避免鏡頭真的故障時反覆重啟. url 留空 = 不自動重啟
+go2rtc:
+  url: "http://go2rtc-host:1984"
+  restart_after: 180
+  restart_cooldown: 1800
+
 web:
   port: 8091            # 即時畫面 / 截圖: http://<主機>:8091/
 
@@ -16,6 +24,7 @@ detection:
   ocr_models: [cct-xs-v2-global-model, cct-s-v2-global-model]  # 多模型平均, 較準
   cpu_threads: 1        # 每次推論使用的 CPU 執行緒數
   plate_conf: 0.4       # 車牌框偵測門檻
+  plate_vehicle_crops: true  # 除全畫面外, 也在各車框內偵測車牌 (2K 畫面遠處車牌整張縮小後太小, 裁切後才偵測得到)
   frame_min_conf: 0.45  # 單張畫面信心低於此值 (模糊/遮擋) 不納入
   ocr_min_conf: 0.6     # 累積後的車牌信心門檻 (每字幾何平均機率)
   include_motorcycle_formats: true   # 是否接受舊式機車車牌格式 (ABC-123 / 123-ABC)

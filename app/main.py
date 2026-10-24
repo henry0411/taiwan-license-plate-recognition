@@ -183,6 +183,46 @@ class RecentPlates:
 RECENT = RecentPlates()
 
 
+class Go2rtcRestarter:
+    """鏡頭斷線 (motionEye 灰色「UNABLE TO OPEN」畫面) 持續一段時間 -> 重啟 go2rtc.
+
+    go2rtc 與網路鏡頭的連線卡住時, 重啟 go2rtc 後 motionEye 會自動重連恢復畫面.
+    重啟會讓所有鏡頭中斷約十幾秒, 因此多支鏡頭共用一個冷卻時間, 避免反覆重啟.
+    """
+
+    def __init__(self, conf):
+        conf = conf or {}
+        self.url = (conf.get("url") or "").rstrip("/")
+        self.after = conf.get("restart_after", 180)
+        self.cooldown = conf.get("restart_cooldown", 1800)
+        self.last, self.lock = -1e18, threading.Lock()
+
+    def maybe_restart(self, worker, offline_seconds, now):
+        """回傳 True 表示本次已送出重啟."""
+        if not self.url or offline_seconds < self.after:
+            return False
+        with self.lock:
+            if now - self.last < self.cooldown:
+                return False
+            self.last = now
+        try:
+            r = requests.post(f"{self.url}/api/restart", timeout=10)
+            ok = r.status_code < 400
+            detail = f"HTTP {r.status_code}"
+        except Exception as e:  # noqa: BLE001
+            # go2rtc 收到後立即重啟, 可能來不及回應就斷線 -> 視為已送出; 連不上 (refused / 逾時) 才算失敗
+            ok = isinstance(e, requests.ReadTimeout) or "Connection aborted" in str(e)
+            detail = str(e)[:200]
+        log.warning("[%s] 斷線 %d 秒, 重啟 go2rtc: %s (%s)", worker.name_, offline_seconds,
+                    "已送出" if ok else "失敗", detail)
+        worker._send_text(f"🔄 {worker.label} 斷線 {offline_seconds / 60:.0f} 分鐘，已自動重啟 go2rtc"
+                          if ok else f"⚠️ {worker.label} 斷線，自動重啟 go2rtc 失敗：{detail}")
+        return ok
+
+
+GO2RTC = Go2rtcRestarter(None)
+
+
 # ---------------------------------------------------------------- 白名單
 class Whitelist:
     """白名單 YAML, 檔案修改後自動重新載入 (不需重啟)."""
@@ -741,6 +781,7 @@ class CameraWorker(threading.Thread):
                     log.exception("[%s] 處理錯誤", self.name_)
             else:
                 self.check_offline(start)
+                GO2RTC.maybe_restart(self, start - self.last_good, start)
             time.sleep(max(0.05, period - (time.time() - start)))
 
 
@@ -889,6 +930,8 @@ def main():
             print(f"plate box={box} det={d.confidence:.2f} -> {plate} conf={conf:.2f}{wl}")
         return
 
+    global GO2RTC
+    GO2RTC = Go2rtcRestarter(cfg.get("go2rtc"))
     det_cfg = worker_cfg(cfg, syn)
     cooldowns = Cooldowns(DATA_DIR / "cooldowns.json")
     gallery = Gallery(DATA_DIR / "gallery", cfg.get("gallery", {}).get("max_per_plate", 300))
