@@ -509,9 +509,8 @@ class CameraWorker(threading.Thread):
                 self.last_motion_save = now
                 self.save_motion_frame(frame, now)
         if self.cam.get("notify_parked") and self.prev_thumb is not None:
-            if changed >= 0.6:   # 日夜模式切換/開燈: 之前的參考畫面無法比對
-                self.ref_frames = []
-            elif changed < 0.02 and (not self.ref_frames or now - self.ref_frames[-1][0] >= 30):
+            # 開燈/日夜模式切換後不清除參考畫面: 邊緣比對受光線影響小 (實測白天彩色 vs 夜間紅外線同一台機車仍有 0.87)
+            if changed < 0.02 and (not self.ref_frames or now - self.ref_frames[-1][0] >= 30):
                 self.ref_frames = [r for r in self.ref_frames if now - r[0] < 1800] + [(now, ref_edges(frame))]
         if changed < self.cfg.get("static_change", 0.005) and now - self.last_full < self.cfg.get("static_refresh", 10):
             return
@@ -701,8 +700,12 @@ class CameraWorker(threading.Thread):
             # 停入前後要有畫面移動 (車輛駛入/牽入); 原本就停著、因光線變亮才偵測到的車不通知
             if any(v.first_seen - 180 <= t <= v.parked_since for t in self.motion_times):
                 # 比對車框區域與停入前的參考畫面: 幾乎一樣 = 原本就停著 (被人/車擋住後重新追蹤), 不通知
-                ref = next((r for r in reversed(self.ref_frames) if r[0] <= v.first_seen - 60), None)
-                sim = region_similarity(ref[1], ref_edges(frame), v.box, frame.shape) if ref else None
+                # 與停入前 30 分鐘內所有參考畫面比對, 取最相似的 (光線變化前後的參考畫面都可能存在)
+                cur = ref_edges(frame)
+                sims = [(region_similarity(r[1], cur, v.box, frame.shape), r) for r in self.ref_frames
+                        if r[0] <= v.first_seen - 60]
+                sims = [x for x in sims if x[0] is not None]
+                sim, ref = max(sims, key=lambda x: x[0]) if sims else (None, None)
                 same = sim is not None and sim >= self.cam.get("arrival_same_similarity", 0.5)
                 log.info("[%s] 車輛 #%d (%s) 停入前後比對: %s%s", self.name_, v.id, v.type_name,
                          f"相似度 {sim:.2f} ({now - ref[0]:.0f} 秒前畫面)" if sim is not None else "無參考畫面",
