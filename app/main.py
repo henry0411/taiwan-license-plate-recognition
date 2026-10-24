@@ -173,10 +173,11 @@ class RecentPlates:
                 if r["plate"] == plate:
                     r["claimed"] = True
 
-    def candidates(self, since, until):
-        """時間範圍內未被認領的車牌, 白名單優先, 其次越接近停妥時間越前面."""
+    def candidates(self, since, until, cameras=None):
+        """時間範圍內未被認領的車牌 (cameras: 只取這些鏡頭讀到的), 白名單優先, 其次越接近停妥時間越前面."""
         with self.lock:
-            c = [r for r in self.items if since <= r["time"] <= until and not r["claimed"]]
+            c = [r for r in self.items if since <= r["time"] <= until and not r["claimed"]
+                 and (cameras is None or r["camera"] in cameras)]
         return sorted(c, key=lambda r: (r["entry"] is None, until - r["time"]))
 
 
@@ -665,10 +666,11 @@ class CameraWorker(threading.Thread):
         return self.cam.get("notify_after", self.vcfg["unidentified_after"])
 
     def lookup_recent_plate(self, v, now):
-        """停妥車輛讀不到車牌: 找駛入前後 (任一鏡頭) 讀到、尚未被其他車認領的車牌."""
+        """停妥車輛讀不到車牌: 找駛入前後讀到、尚未被其他車認領的車牌.
+        預設只採用本鏡頭讀到的 (各鏡頭拍的不是同一個地方); 鏡頭設定 plate_sources 可指定其他拍得到同一條車道的鏡頭."""
         window = self.vcfg.get("approach_seconds", 300)
         types = {"car": "car", "truck": "car", "bus": "car", "motorcycle": "motorcycle"}
-        cands = RECENT.candidates(v.first_seen - window, now)
+        cands = RECENT.candidates(v.first_seen - window, now, self.cam.get("plate_sources", [self.name_]))
         # 白名單有登記車種時, 排除車種不符的 (例如停的是機車, 不配汽車車牌)
         cands = [r for r in cands if not (r["entry"] and r["entry"].get("type")
                                           and r["entry"]["type"] != types.get(v.type_name, r["entry"]["type"]))]
