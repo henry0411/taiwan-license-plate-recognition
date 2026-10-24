@@ -525,9 +525,7 @@ class CameraWorker(threading.Thread):
         else:
             vehicle_frame = False
 
-        dets = self.models.detector.predict(frame)
-        boxes = [(d.bounding_box.x1, d.bounding_box.y1, d.bounding_box.x2, d.bounding_box.y2) for d in dets]
-        self.update_tracks(boxes, now)
+        self.update_tracks(self.detect_plates(frame, now), now)
         dwell = self.cam.get("dwell_seconds", 10)
         for t in self.tracks:
             if t.last_seen != now:
@@ -578,6 +576,32 @@ class CameraWorker(threading.Thread):
             if self.cam.get("notify_parked"):
                 self.mark_parked_spots(frame, now)
         self.annotate(frame, now)
+
+    def detect_plates(self, frame, now):
+        """車牌框 (原圖座標). 全畫面偵測外, 另在各車框內再偵測一次:
+        車牌偵測模型輸入只有 384px, 2K 畫面整張縮小後遠處車牌只剩十幾像素, 裁切車框後才偵測得到."""
+        det = self.models.detector
+        boxes = [(d.bounding_box.x1, d.bounding_box.y1, d.bounding_box.x2, d.bounding_box.y2) for d in det.predict(frame)]
+        if not self.cfg.get("plate_vehicle_crops", True):
+            return boxes
+        h, w = frame.shape[:2]
+        for v in self.vehicles.tracks:
+            if now - v.last_seen > 10:
+                continue
+            x1, y1, x2, y2 = v.box
+            if x2 - x1 > 0.6 * w and y2 - y1 > 0.6 * h:
+                continue  # 車框幾乎是整張畫面, 裁切沒有幫助
+            px, py = 0.1 * (x2 - x1), 0.1 * (y2 - y1)
+            cx1, cy1 = int(max(0, x1 - px)), int(max(0, y1 - py))
+            cx2, cy2 = int(min(w, x2 + px)), int(min(h, y2 + py))
+            if cx2 - cx1 < 32 or cy2 - cy1 < 32:
+                continue
+            for d in det.predict(frame[cy1:cy2, cx1:cx2]):
+                bb = d.bounding_box
+                b = (bb.x1 + cx1, bb.y1 + cy1, bb.x2 + cx1, bb.y2 + cy1)
+                if not any(moved(b, o) < 0.5 for o in boxes):
+                    boxes.append(b)
+        return boxes
 
     def update_vehicles(self, frame, now):
         h, w = frame.shape[:2]
