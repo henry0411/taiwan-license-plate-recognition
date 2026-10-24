@@ -99,3 +99,10 @@ cameras:
     vehicle_min_area: 0.04        # 車庫內車輛都很近, 小框多半是被擋住的局部 (座墊/車尾) 誤判
     zone: null            # 不設圍籬, 全畫面辨識
     dwell_seconds: 3
+    # 駛入時多讀幾張車牌: 畫面有動靜後 motion_hold_seconds 秒內改用 motion_fps 處理 (平時 process_fps)
+    motion_fps: 3
+    motion_hold_seconds: 15
+    min_votes: 2                  # 駛入時車牌只出現幾秒, 車庫內 2 張一致即確認 (其他鏡頭用 detection.min_votes)
+    # 有動靜時存原始畫面到 data/motion/garage/ (每秒最多 1 張, 保留最近 1500 張), 供確認駛入時是否拍得到車牌
+    save_motion_frames: true
+    save_motion_frames_keep: 1500

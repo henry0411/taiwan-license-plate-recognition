@@ -31,6 +31,7 @@ log = logging.getLogger("lpr")
 DATA_DIR = Path(os.environ.get("DATA_DIR", "/data"))
 SNAP_DIR = DATA_DIR / "snapshots"
 RAW_DIR = DATA_DIR / "raw"
+MOTION_DIR = DATA_DIR / "motion"  # 有動靜時的原始畫面 (save_motion_frames), 供確認駛入時是否拍得到車牌
 LIVE = {}  # 鏡頭名稱 -> 最新標註畫面 (JPEG bytes)
 WORKERS = {}  # 鏡頭名稱 -> CameraWorker
 
@@ -258,6 +259,7 @@ class CameraWorker(threading.Thread):
         self.motion_times = []  # 進車通知: 畫面有明顯局部變化 (人/車移動) 的時間
         self.ref_frames = []    # 進車通知: 畫面靜止時的參考畫面 [(時間, 縮小邊緣圖)], 用來比對車框區域停入前是否已有車
         self.last_good, self.offline_alerted = time.time(), False
+        self.last_motion, self.last_motion_save = 0.0, 0.0
         # 旋轉鏡頭: 只有轉回原位時才辨識
         self.home = HomeCheck(DATA_DIR / "home" / self.name_, cam.get("home_min_inliers", 20),
                               cam.get("home_max_shift", 0.08)) if cam.get("rotating") else None
@@ -325,7 +327,7 @@ class CameraWorker(threading.Thread):
         plate, conf = self.models.decoder.decode(mean, self.moto)
         t.history.append(plate)
         t.last_read = plate
-        n = self.cfg["min_votes"]
+        n = self.cam.get("min_votes", self.cfg["min_votes"])
         if t.reads < n:
             return None
         # 白名單: 與最佳解碼結果機率相近即視為該車 (容許夜間/模糊造成的個別字元誤讀)
@@ -353,6 +355,16 @@ class CameraWorker(threading.Thread):
         SNAP_DIR.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(SNAP_DIR / fname), snap)
         return fname
+
+    def save_motion_frame(self, frame, now):
+        """有動靜時存原始畫面 (每秒最多一張), 只保留最近 save_motion_frames_keep 張."""
+        d = MOTION_DIR / self.name_
+        d.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(d / f"{datetime.fromtimestamp(now):%Y%m%d_%H%M%S}.jpg"), frame,
+                    [cv2.IMWRITE_JPEG_QUALITY, 85])
+        files = sorted(d.glob("*.jpg"))
+        for f in files[:max(0, len(files) - self.cam.get("save_motion_frames_keep", 1500))]:
+            f.unlink(missing_ok=True)
 
     def check_offline(self, now):
         """超過 offline_alert 秒沒有正常畫面 (斷線 / 灰色「CONNECTION TO CAMERA LOST」畫面) 通知一次."""
@@ -451,6 +463,11 @@ class CameraWorker(threading.Thread):
         # 局部變化才算有東西在動; 整個畫面都變 (日夜模式切換/開燈) 不算
         if 0.02 <= changed < 0.6 and self.prev_thumb is not None:
             self.motion_times = [t for t in self.motion_times if now - t < 900] + [now]
+        if 0.02 <= changed < 0.6 and self.prev_thumb is not None:  # 局部動靜 (人/車移動)
+            self.last_motion = now
+            if self.cam.get("save_motion_frames") and now - self.last_motion_save >= 1.0:
+                self.last_motion_save = now
+                self.save_motion_frame(frame, now)
         if self.cam.get("notify_parked") and self.prev_thumb is not None:
             if changed >= 0.6:   # 日夜模式切換/開燈: 之前的參考畫面無法比對
                 self.ref_frames = []
@@ -698,9 +715,15 @@ class CameraWorker(threading.Thread):
 
     def run(self):
         self.reader.start()
-        period = 1.0 / self.cam.get("process_fps", 2)
+        base_fps = self.cam.get("process_fps", 2)
+        motion_fps = self.cam.get("motion_fps", base_fps)
+        hold = self.cam.get("motion_hold_seconds", 15)
         while True:
             start = time.time()
+            # 畫面有動靜 (例如車輛駛入) 後 motion_hold_seconds 秒內提高處理頻率, 多讀幾張車牌
+            fps = motion_fps if start - self.last_motion < hold else base_fps
+            period = 1.0 / fps
+            self.reader.min_interval = 0.8 / fps
             frame = self.reader.frame()
             if frame is not None:  # 鏡頭斷線時是單色畫面 (上下有文字), 略過
                 h = frame.shape[0]
