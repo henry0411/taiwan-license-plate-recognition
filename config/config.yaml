@@ -32,6 +32,7 @@ detection:
   ocr_interval: 1.0     # 每台車 OCR 間隔(秒)
   ocr_max_attempts: 20  # 同一車牌嘗試幾次仍無法確認後, 改用較長間隔
   ocr_retry_interval: 30  # 上述情況的 OCR 間隔(秒)
+  corrupt_frame_ratio: 0.08  # 灰色馬賽克破圖 (串流掉資料) 的平坦灰色區塊比例 >= 此值則略過該張 (正常畫面實測 < 0.075)
   static_change: 0.005  # 畫面變化像素比例低於此值視為靜止, 略過偵測 (省 CPU)
   static_refresh: 10    # 靜止畫面每隔幾秒仍完整處理一次
   track_lost_seconds: 30      # 車牌消失多久後視為離開
@@ -76,6 +77,7 @@ cameras:
       - [[0.87, 0.16], [0.96, 0.16], [0.96, 0.25], [0.87, 0.25]]
     dwell_seconds: 10     # 車牌在圍籬內靜止超過幾秒才辨識 (排除路過車輛)
     plate_sources: [outside_1, outside_2]   # 同一台雙鏡頭攝影機, 拍同一段路邊, 互相採用對方讀到的車牌
+    vehicle_pad: 0.0              # 640x360 畫面: 不留白時近處黑色車信心 0.53 (留白 0.15 偵測不到)
 
   - name: outside_2
     label: 車庫外旋轉鏡頭
@@ -92,6 +94,8 @@ cameras:
       - [[0.71, 0.28], [0.80, 0.28], [0.80, 0.37], [0.71, 0.37]]
     dwell_seconds: 10
     plate_sources: [outside_1, outside_2]   # 同一台雙鏡頭攝影機, 拍同一段路邊, 互相採用對方讀到的車牌
+    vehicle_model: yolov8n.onnx   # 2K 畫面 (go2rtc subtype=3): 640 模型 + 不留白, 實測 近處汽車 0.85 / 416+留白 0.15 偵測不到
+    vehicle_pad: 0.0
 
   - name: garage
     label: 車庫內
