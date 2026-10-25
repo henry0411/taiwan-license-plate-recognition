@@ -290,6 +290,7 @@ class CameraWorker(threading.Thread):
         self.last_vehicle_run = 0.0
         self.prev_thumb, self.last_full = None, 0.0
         self.started = time.time()
+        self.home_since = 0.0   # 旋轉鏡頭最近一次回到原位的時間
         self.moto = cam.get("include_motorcycle_formats", cfg["include_motorcycle_formats"])
         self.zone_norm = np.array(cam["zone"], np.float32) if cam.get("zone") else None
         self.zone_px = None     # 本張畫面的圍籬 (像素座標, 旋轉鏡頭會依原位比對結果校正)
@@ -495,6 +496,8 @@ class CameraWorker(threading.Thread):
             # 旋轉鏡頭轉動: 畫面位置都變了, 重新追蹤 (離開原位時仍會讀車牌, 只是不判斷停車)
             if not self.active:
                 log.info("[%s] 鏡頭離開原位, 暫停停車判斷 (仍記錄車牌)", self.name_)
+            else:
+                self.home_since = now  # 回到原位: 此時已停著的車視同原本就在 (不採用駛入車牌/不通知)
             self.tracks = []
             self.vehicles = VehicleTracker(self.vcfg["lost_seconds"], self.vcfg["relink_seconds"])
 
@@ -567,7 +570,8 @@ class CameraWorker(threading.Thread):
                          f" -> 車輛 #{v.id}" if v is not None else "", "" if self.active else " (鏡頭不在原位)")
                 fname = self._snapshot(frame, [(t.box, result[0], (0, 255, 0))], datetime.now(), f"read_{result[0]}")
                 RECENT.add(plate=result[0], conf=result[1], entry=result[2], reads=t.reads, time=now,
-                           camera=self.name_, label=self.label, fname=fname)
+                           camera=self.name_, label=self.label, fname=fname,
+                           vehicle=v.id if v is not None else None, box=tuple(t.box))
                 if v is not None:
                     v.set_plate(*result, t.reads)
 
@@ -618,7 +622,8 @@ class CameraWorker(threading.Thread):
         area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
         dets = [d for d in dets if not any(e is not d and e[4] > d[4] and inside(e[:4], d[:4]) >= 0.8
                                            and area(d) >= 1.5 * area(e) for e in dets)]
-        startup = now - self.started < self.vcfg["startup_grace"]
+        # 服務啟動 / 旋轉鏡頭回到原位後 startup_grace 秒內就在的車 = 原本就停著
+        startup = now - max(self.started, self.home_since) < self.vcfg["startup_grace"]
         self.vehicles.update(dets, now, startup)
         for v in self.vehicles.tracks:
             if v.last_seen == now:
@@ -671,6 +676,27 @@ class CameraWorker(threading.Thread):
         window = self.vcfg.get("approach_seconds", 300)
         types = {"car": "car", "truck": "car", "bus": "car", "motorcycle": "motorcycle"}
         cands = RECENT.candidates(v.first_seen - window, now, self.cam.get("plate_sources", [self.name_]))
+        # 須為同一台車: 讀到時就屬於這台車, 或車牌位置所在的最小車框就是這台車
+        # (避免路過車輛 / 旁邊停著的車的車牌, 被套到剛重新追蹤的車; 近處大車框常會蓋住遠處車輛)
+        live = {t.id: t for t in self.vehicles.tracks if now - t.last_seen <= self.vcfg["lost_seconds"]}
+        area = lambda b: (b[2] - b[0]) * (b[3] - b[1])  # noqa: E731
+
+        def same_vehicle(r):
+            if r["camera"] == self.name_ and r.get("vehicle") is not None:
+                if r["vehicle"] == v.id:
+                    return True
+                if r["vehicle"] in live:   # 屬於另一台仍在畫面中的車
+                    return False
+            if r.get("box") is None:
+                return False
+            cx, cy = center(r["box"])
+            owners = [t for t in live.values() if t.box[0] <= cx <= t.box[2] and t.box[1] <= cy <= t.box[3]]
+            return bool(owners) and min(owners, key=lambda t: area(t.box)) is v
+
+        skipped = [r["plate"] for r in cands if not same_vehicle(r)]
+        cands = [r for r in cands if same_vehicle(r)]
+        if skipped:
+            log.info("[%s] 車輛 #%d 不採用其他車輛的車牌: %s", self.name_, v.id, ", ".join(skipped[:4]))
         # 白名單有登記車種時, 排除車種不符的 (例如停的是機車, 不配汽車車牌)
         cands = [r for r in cands if not (r["entry"] and r["entry"].get("type")
                                           and r["entry"]["type"] != types.get(v.type_name, r["entry"]["type"]))]
