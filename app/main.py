@@ -94,6 +94,14 @@ class MjpegReader(threading.Thread):
         return cv2.imdecode(np.frombuffer(data, np.uint8), cv2.IMREAD_COLOR)
 
 
+def corrupt_ratio(frame):
+    """影像串流掉資料時 (H.265 參考影格遺失) 的破圖: 大片完全平坦、接近 128 的灰色區塊. 回傳此類 8x8 區塊比例.
+    正常畫面 (含柏油路面) 實測最多 0.04, 破圖 0.1 以上."""
+    g = cv2.cvtColor(cv2.resize(frame, (320, 176), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
+    b = g.astype(np.float32).reshape(22, 8, 40, 8).transpose(0, 2, 1, 3).reshape(22, 40, 64)
+    return float(((b.std(-1) < 1.5) & (np.abs(b.mean(-1) - 128) < 10)).mean())
+
+
 # ---------------------------------------------------------------- 車牌追蹤
 def center(b):
     return (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
@@ -302,6 +310,7 @@ class CameraWorker(threading.Thread):
         self.ref_frames = []    # 進車通知: 畫面靜止時的參考畫面 [(時間, 縮小邊緣圖)], 用來比對車框區域停入前是否已有車
         self.last_good, self.offline_alerted = time.time(), False
         self.last_motion, self.last_motion_save = 0.0, 0.0
+        self.corrupt_count, self.corrupt_logged = 0, 0.0   # 略過的破圖數 (定時寫 log)
         # 旋轉鏡頭: 只有轉回原位時才辨識
         self.home = HomeCheck(DATA_DIR / "home" / self.name_, cam.get("home_min_inliers", 20),
                               cam.get("home_max_shift", 0.08)) if cam.get("rotating") else None
@@ -830,10 +839,19 @@ class CameraWorker(threading.Thread):
                     self.offline_alerted = False
                     log.info("[%s] 鏡頭恢復連線", self.name_)
                     self._send_text(f"✅ 鏡頭恢復連線：{self.label}")
-                try:
-                    self.process(frame, start)
-                except Exception:  # noqa: BLE001
-                    log.exception("[%s] 處理錯誤", self.name_)
+                ratio = corrupt_ratio(frame)
+                if ratio >= self.cfg.get("corrupt_frame_ratio", 0.08):
+                    # 影像串流掉資料造成的灰色馬賽克破圖: 略過不處理 (仍算有畫面, 不觸發斷線/重啟)
+                    self.corrupt_count += 1
+                    if start - self.corrupt_logged >= 600:
+                        log.info("[%s] 略過破圖 (灰色馬賽克 %.0f%%), 最近 %d 分鐘共略過 %d 張", self.name_, ratio * 100,
+                                 (start - self.corrupt_logged) // 60 if self.corrupt_logged else 0, self.corrupt_count)
+                        self.corrupt_logged, self.corrupt_count = start, 0
+                else:
+                    try:
+                        self.process(frame, start)
+                    except Exception:  # noqa: BLE001
+                        log.exception("[%s] 處理錯誤", self.name_)
             else:
                 self.check_offline(start)
                 GO2RTC.maybe_restart(self, start - self.last_good, start)
