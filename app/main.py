@@ -193,39 +193,51 @@ RECENT = RecentPlates()
 
 
 class Go2rtcRestarter:
-    """鏡頭斷線 (motionEye 灰色「UNABLE TO OPEN」畫面) 持續一段時間 -> 重啟 go2rtc.
+    """鏡頭斷線 (motionEye 灰色「UNABLE TO OPEN」畫面) 持續一段時間 -> 只重設該鏡頭的 go2rtc 串流.
 
-    go2rtc 與網路鏡頭的連線卡住時, 重啟 go2rtc 後 motionEye 會自動重連恢復畫面.
-    重啟會讓所有鏡頭中斷約十幾秒, 因此多支鏡頭共用一個冷卻時間, 避免反覆重啟.
+    只處理設定了 go2rtc_stream 的鏡頭. 透過 API 移除再加回該串流 (不改 go2rtc 設定檔、不重啟整個 go2rtc),
+    go2rtc 與網路鏡頭的舊連線會先關閉, motionEye 再自動重連; 其他鏡頭不受影響.
+    網路鏡頭同時只接受 2 個連線, 因此每支鏡頭兩次重設至少間隔 restart_cooldown 秒.
     """
 
     def __init__(self, conf):
         conf = conf or {}
         self.url = (conf.get("url") or "").rstrip("/")
         self.after = conf.get("restart_after", 180)
-        self.cooldown = conf.get("restart_cooldown", 1800)
-        self.last, self.lock = -1e18, threading.Lock()
+        self.cooldown = conf.get("restart_cooldown", 600)
+        self.last, self.lock = {}, threading.Lock()
+
+    def _reset_stream(self, name):
+        """移除再加回串流 (來源取自 go2rtc 目前設定). 回傳 (成功, 說明)."""
+        streams = (yaml.safe_load(requests.get(f"{self.url}/api/config", timeout=10).text) or {}).get("streams") or {}
+        src = streams.get(name)
+        src = src[0] if isinstance(src, list) else src
+        if not src:
+            return False, f"go2rtc 設定中找不到串流 {name}"
+        r = requests.delete(f"{self.url}/api/streams", params={"src": name}, timeout=10)
+        if r.status_code >= 400:
+            return False, f"移除串流 HTTP {r.status_code}"
+        time.sleep(2)  # 讓舊連線先關閉, 避免超過鏡頭連線數上限
+        r = requests.put(f"{self.url}/api/streams", params={"name": name, "src": src}, timeout=10)
+        return r.status_code < 400, f"HTTP {r.status_code}"
 
     def maybe_restart(self, worker, offline_seconds, now):
-        """回傳 True 表示本次已送出重啟."""
-        if not self.url or offline_seconds < self.after:
+        """回傳 True 表示本次已重設串流."""
+        name = worker.cam.get("go2rtc_stream")
+        if not self.url or not name or offline_seconds < self.after:
             return False
         with self.lock:
-            if now - self.last < self.cooldown:
+            if now - self.last.get(name, -1e18) < self.cooldown:
                 return False
-            self.last = now
+            self.last[name] = now
         try:
-            r = requests.post(f"{self.url}/api/restart", timeout=10)
-            ok = r.status_code < 400
-            detail = f"HTTP {r.status_code}"
+            ok, detail = self._reset_stream(name)
         except Exception as e:  # noqa: BLE001
-            # go2rtc 收到後立即重啟, 可能來不及回應就斷線 -> 視為已送出; 連不上 (refused / 逾時) 才算失敗
-            ok = isinstance(e, requests.ReadTimeout) or "Connection aborted" in str(e)
-            detail = str(e)[:200]
-        log.warning("[%s] 斷線 %d 秒, 重啟 go2rtc: %s (%s)", worker.name_, offline_seconds,
-                    "已送出" if ok else "失敗", detail)
-        worker._send_text(f"🔄 {worker.label} 斷線 {offline_seconds / 60:.0f} 分鐘，已自動重啟 go2rtc"
-                          if ok else f"⚠️ {worker.label} 斷線，自動重啟 go2rtc 失敗：{detail}")
+            ok, detail = False, str(e)[:200]
+        log.warning("[%s] 斷線 %d 秒, 重設 go2rtc 串流 %s: %s (%s)", worker.name_, offline_seconds, name,
+                    "完成" if ok else "失敗", detail)
+        worker._send_text(f"🔄 {worker.label} 斷線 {offline_seconds / 60:.0f} 分鐘，已自動重設 go2rtc 串流 {name}"
+                          if ok else f"⚠️ {worker.label} 斷線，自動重設 go2rtc 串流 {name} 失敗：{detail}")
         return ok
 
 

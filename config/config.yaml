@@ -8,13 +8,13 @@ synology:
   snapshot_base_url: "http://lpr-host:8091"
   verify_ssl: true
 
-# go2rtc (網路鏡頭 -> RTSP, go2rtc-host): 與鏡頭的連線卡住時 motionEye 只會顯示灰色「UNABLE TO OPEN VIDEO DEVICE」,
-# 重啟 go2rtc 即可恢復. 任一鏡頭斷線超過 restart_after 秒自動重啟 (重啟會讓所有鏡頭中斷約十幾秒);
-# 兩次重啟至少間隔 restart_cooldown 秒, 避免鏡頭真的故障時反覆重啟. url 留空 = 不自動重啟
+# go2rtc (網路鏡頭 -> RTSP, go2rtc-host): 與鏡頭的連線卡住時 motionEye 只會顯示灰色「UNABLE TO OPEN VIDEO DEVICE」.
+# 設定了 go2rtc_stream 的鏡頭斷線超過 restart_after 秒, 透過 API 移除再加回該串流 (不改設定檔、不重啟整個 go2rtc, 其他鏡頭不受影響);
+# 同一串流兩次重設至少間隔 restart_cooldown 秒 (網路鏡頭同時只接受 2 個連線). url 留空 = 不自動處理
 go2rtc:
   url: "http://go2rtc-host:1984"
   restart_after: 180
-  restart_cooldown: 1800
+  restart_cooldown: 600
 
 web:
   port: 8091            # 即時畫面 / 截圖: http://<主機>:8091/
@@ -64,24 +64,26 @@ gallery:
 
 cameras:
   # name: 內部代號 (截圖檔名/原位參考資料夾, 請勿更改); label: 通知訊息與網頁上顯示的名稱
-  - name: outside_1
-    label: 車庫外
-    url: "http://camera-host:9084/"
-    process_fps: 1
-    # 電子圍籬: 紅線右側停車區, 車牌中心在多邊形內才辨識 (座標為畫面比例 0~1)
-    zone: [[0.14, 1.0], [0.905, 0.155], [1.0, 0.075], [1.0, 1.0]]
-    # 排除區: 車框一半以上落在其中的偵測結果忽略 (人行道上的水溝蓋常被誤判為車輛)
-    ignore:
-      - [[0.27, 0.84], [0.47, 0.84], [0.47, 1.0], [0.27, 1.0]]
-      - [[0.71, 0.35], [0.84, 0.35], [0.84, 0.49], [0.71, 0.49]]
-      - [[0.87, 0.16], [0.96, 0.16], [0.96, 0.25], [0.87, 0.25]]
-    dwell_seconds: 10     # 車牌在圍籬內靜止超過幾秒才辨識 (排除路過車輛)
-    plate_sources: [outside_1, outside_2]   # 同一台雙鏡頭攝影機, 拍同一段路邊, 互相採用對方讀到的車牌
-    vehicle_pad: 0.0              # 640x360 畫面: 不留白時近處黑色車信心 0.53 (留白 0.15 偵測不到)
+  # outside_1 (同一台雙鏡頭攝影機的另一顆鏡頭, 640x360, 與 outside_2 拍同一段路) 已停用; 要恢復請取消以下註解
+  # - name: outside_1
+  #   label: 車庫外
+  #   url: "http://camera-host:9084/"
+  #   process_fps: 1
+  #   # 電子圍籬: 紅線右側停車區, 車牌中心在多邊形內才辨識 (座標為畫面比例 0~1)
+  #   zone: [[0.14, 1.0], [0.905, 0.155], [1.0, 0.075], [1.0, 1.0]]
+  #   # 排除區: 車框一半以上落在其中的偵測結果忽略 (人行道上的水溝蓋常被誤判為車輛)
+  #   ignore:
+  #     - [[0.27, 0.84], [0.47, 0.84], [0.47, 1.0], [0.27, 1.0]]
+  #     - [[0.71, 0.35], [0.84, 0.35], [0.84, 0.49], [0.71, 0.49]]
+  #     - [[0.87, 0.16], [0.96, 0.16], [0.96, 0.25], [0.87, 0.25]]
+  #   dwell_seconds: 10     # 車牌在圍籬內靜止超過幾秒才辨識 (排除路過車輛)
+  #   plate_sources: [outside_1, outside_2]   # 同一台雙鏡頭攝影機, 拍同一段路邊, 互相採用對方讀到的車牌
+  #   vehicle_pad: 0.0              # 640x360 畫面: 不留白時近處黑色車信心 0.53 (留白 0.15 偵測不到)
 
   - name: outside_2
     label: 車庫外旋轉鏡頭
     url: "http://camera-host:9085/"
+    go2rtc_stream: cam_outside_2   # 斷線時自動重設此 go2rtc 串流 (未設定的鏡頭不自動處理)
     process_fps: 1
     # 旋轉鏡頭 (行人追蹤): 只有轉回原位時才辨識.
     # 原位參考畫面: 在網頁上鏡頭停在原位時按「設為原位參考」(建議白天、夜間各存一張)
@@ -93,7 +95,6 @@ cameras:
       - [[0.55, 0.45], [0.70, 0.45], [0.70, 0.63], [0.55, 0.63]]
       - [[0.71, 0.28], [0.80, 0.28], [0.80, 0.37], [0.71, 0.37]]
     dwell_seconds: 10
-    plate_sources: [outside_1, outside_2]   # 同一台雙鏡頭攝影機, 拍同一段路邊, 互相採用對方讀到的車牌
     vehicle_model: yolov8n.onnx   # 2K 畫面 (go2rtc subtype=3): 640 模型 + 不留白, 實測 近處汽車 0.85 / 416+留白 0.15 偵測不到
     vehicle_pad: 0.0
 
