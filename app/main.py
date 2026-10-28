@@ -316,6 +316,10 @@ class CameraWorker(threading.Thread):
         self.zone_px = None     # 本張畫面的圍籬 (像素座標, 旋轉鏡頭會依原位比對結果校正)
         # 排除區 (例如水溝蓋): 車框大部分落在其中的偵測結果直接忽略
         self.ignore_norm = [np.array(z, np.float32) for z in cam.get("ignore") or []]
+        # 路上臨停區 (例如紅線外的車道): 車輛停留 road_stop_seconds 秒以上發通知
+        self.road_norm = np.array(cam["road_zone"], np.float32) if cam.get("road_zone") else None
+        self.road_px = None
+        self.road_notified = []  # 已通知的臨停位置 [(cx, cy, 時間)] (畫面比例), 同位置冷卻期間不重複通知
         self.ignore_px = []
         self.parked_spots = []  # 進車通知: 最近有車停著的位置 [(cx, cy, 時間)] (畫面比例)
         self.motion_times = []  # 進車通知: 畫面有明顯局部變化 (人/車移動) 的時間
@@ -355,6 +359,7 @@ class CameraWorker(threading.Thread):
             warp = lambda z: z  # noqa: E731
         self.zone_px = None if zone is None else (warp(zone) * [w, h]).astype(np.float32)
         self.ignore_px = [(warp(z) * [w, h]).astype(np.float32) for z in self.ignore_norm]
+        self.road_px = None if self.road_norm is None else (warp(self.road_norm) * [w, h]).astype(np.float32)
         return True
 
     def update_tracks(self, boxes, now):
@@ -598,6 +603,8 @@ class CameraWorker(threading.Thread):
 
         if vehicle_frame:
             self.check_vehicles(frame, now)
+            if self.road_px is not None and self.active:
+                self.check_road_stops(frame, now)
             if self.cam.get("notify_parked"):
                 self.mark_parked_spots(frame, now)
         self.annotate(frame, now)
@@ -685,6 +692,42 @@ class CameraWorker(threading.Thread):
                 if v.plate_entry or self.cfg["gallery"]["save_others"]:
                     self.gallery.save(frame, v.box, self.name_, v.plate, v.plate_entry is not None,
                                       v.plate_conf, v.type_name)
+
+    def check_road_stops(self, frame, now):
+        """路上臨停: 車輛底部中心 (著地點) 在 road_zone 內, 且靜止 road_stop_seconds 秒以上 -> 通知一次."""
+        h, w = frame.shape[:2]
+        limit = self.cam.get("road_stop_seconds", 60)
+        cooldown = self.cam.get("road_notify_cooldown", 600)
+        self.road_notified = [r for r in self.road_notified if now - r[2] < cooldown]
+        for v in self.vehicles.tracks:
+            if v.last_seen != now or getattr(v, "road_notified", False) or v.hits < 3:
+                continue
+            x1, y1, x2, y2 = v.box
+            foot = ((x1 + x2) / 2, y2 - (y2 - y1) * 0.1)  # 車框底部中心略上方 = 車輛著地位置
+            if cv2.pointPolygonTest(self.road_px, (float(foot[0]), float(foot[1])), False) < 0:
+                continue
+            stopped = now - v.still_since
+            if stopped < limit:
+                continue
+            v.road_notified = True
+            cx, cy = foot[0] / w, foot[1] / h
+            if any(((x - cx) ** 2 + (y - cy) ** 2) ** 0.5 < 0.08 for x, y, _ in self.road_notified):
+                log.info("[%s] 車輛 #%d (%s) 路上臨停 %.0f 秒 (同位置冷卻中, 不重複通知)", self.name_, v.id,
+                         v.type_name, stopped)
+                continue
+            self.road_notified.append((cx, cy, now))
+            stamp = datetime.now()
+            fname = self._snapshot(frame, [(v.box, v.plate or v.type_name, (0, 0, 255))], stamp, "roadstop")
+            log.info("[%s] ⚠️ 車輛 #%d (%s) 紅線外臨停 %.0f 秒%s -> %s", self.name_, v.id, v.type_name, stopped,
+                     f", 車號 {v.plate}" if v.plate else "", fname)
+            self._send("\n".join([
+                f"⚠️ {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停在紅線外超過 {limit // 60 if limit >= 60 else limit}"
+                f"{' 分鐘' if limit >= 60 else ' 秒'}",
+                f"🚗 車號：{v.plate}" if v.plate else "🚗 車號：未讀到",
+                f"⏱️ 已停留：{stopped / 60:.1f} 分鐘",
+                f"📷 鏡頭：{self.label}",
+                f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
+            ]), fname)
 
     @property
     def notify_after(self):
@@ -804,6 +847,8 @@ class CameraWorker(threading.Thread):
         if self.active:
             for z in self.ignore_px:
                 cv2.polylines(img, [z.astype(np.int32)], True, (0, 0, 200), lw)
+            if self.road_px is not None:  # 紅線外臨停區: 紫色
+                cv2.polylines(img, [self.road_px.astype(np.int32)], True, (255, 0, 200), lw)
         dwell = self.cam.get("dwell_seconds", 10)
         for v in self.vehicles.tracks:
             if now - v.last_seen > self.vcfg["interval"] * 2.5:
