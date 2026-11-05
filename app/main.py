@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from fast_alpr.default_detector import DefaultDetector
 
+from appearance import Appearance, crop
 from home import HomeCheck
 from vehicle import VehicleDetector
 from vehicles import TYPE_ZH, Gallery, VehicleTracker, inside, ref_edges, region_similarity, zone_overlap
@@ -809,7 +810,7 @@ class CameraWorker(threading.Thread):
                     self.notify_plate(frame, v.plate, v.plate_conf, v.plate_entry, v.plate_reads, now,
                                       vehicle=v, source=v.plate_source)
                 else:
-                    self.notify_arrival(frame, v)
+                    self.notify_arrival(frame, v, self.identify_appearance(frame, v))
             else:
                 log.info("[%s] 車輛 #%d (%s) 停入前畫面無移動, 視為原本就停著, 不通知", self.name_, v.id, v.type_name)
         for i in near:
@@ -817,12 +818,40 @@ class CameraWorker(threading.Thread):
         if v.arrival_done and not near:
             self.parked_spots.append((cx, cy, now))
 
-    def notify_arrival(self, frame, v):
+    def identify_appearance(self, frame, v):
+        """讀不到車牌的機車: 以外觀比對是哪一台自家機車. 回傳 (名稱, 相似度) 或 None."""
+        ap, acfg = self.models.appearance, self.cfg["appearance"]
+        if ap is None or v.type_name != "motorcycle" or not self.cam.get("appearance_match"):
+            return None
+        img = crop(frame, v.box)
+        try:
+            ranked = ap.identify(img)
+        except Exception:
+            log.exception("[%s] 外觀比對失敗", self.name_)
+            return None
+        if not ranked:
+            return None
+        name, sim = ranked[0]
+        margin = sim - ranked[1][1] if len(ranked) > 1 else 1.0
+        ok = sim >= acfg["min_similarity"] and margin >= acfg["min_margin"]
+        log.info("[%s] 車輛 #%d 外觀比對: %s%s", self.name_, v.id,
+                 ", ".join(f"{n} {s:.2f}" for n, s in ranked[:3]), "" if ok else " -> 無法確定")
+        # 留存停入裁切圖 (data/appearance/_arrivals/), 認錯時可移到正確車名資料夾當參考圖
+        if acfg["save_arrivals"]:
+            d = DATA_DIR / "appearance" / "_arrivals"
+            d.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(d / f"{datetime.now():%Y%m%d_%H%M%S}_{name if ok else 'unknown'}_{sim:.2f}.jpg"), img)
+        return (name, sim) if ok else None
+
+    def notify_arrival(self, frame, v, who=None):
         stamp = datetime.now()
-        fname = self._snapshot(frame, [(v.box, v.type_name, (255, 160, 0))], stamp, "arrival")
-        log.info("[%s] 🚗 車輛 #%d (%s) 停入 -> %s", self.name_, v.id, v.type_name, fname)
+        label = who[0] if who else v.type_name
+        fname = self._snapshot(frame, [(v.box, label, (255, 160, 0))], stamp, "arrival")
+        log.info("[%s] 🚗 車輛 #%d (%s) 停入%s -> %s", self.name_, v.id, v.type_name,
+                 f", 外觀辨識為 {who[0]} ({who[1]:.2f})" if who else "", fname)
         self._send("\n".join([
-            f"🚗 {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停入",
+            f"🛵 {self.label}：{who[0]} 停入" if who else f"🚗 {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停入",
+            *([f"🔍 外觀比對：相似度 {who[1]:.2f} (未讀到車牌)"] if who else []),
             f"📷 鏡頭：{self.label}",
             f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",
         ]), fname)
@@ -1004,7 +1033,18 @@ def build_models(cfg):
                                                   sess_options=opts(), pad=pad)
         return vehicle_models[key]
 
-    return SimpleNamespace(detector=detector, ocr=ocr, decoder=Decoder(ocr.alphabet, ocr.pad_char), vehicle=vehicle)
+    # 機車外觀辨識 (有鏡頭設定 appearance_match 且模型存在才載入)
+    appearance = None
+    acfg = cfg.get("appearance") or {}
+    amodel = Path(acfg.get("model", DATA_DIR / "models" / "dinov2-small.onnx"))
+    if acfg.get("enabled", True) and any(c.get("appearance_match") for c in cfg["cameras"]):
+        if amodel.exists():
+            appearance = Appearance(amodel, DATA_DIR / "appearance", providers=prov, sess_options=opts())
+        else:
+            log.warning("找不到外觀辨識模型 %s, 停用機車外觀辨識", amodel)
+
+    return SimpleNamespace(detector=detector, ocr=ocr, decoder=Decoder(ocr.alphabet, ocr.pad_char), vehicle=vehicle,
+                           appearance=appearance)
 
 
 VEHICLE_DEFAULTS = {
@@ -1012,13 +1052,15 @@ VEHICLE_DEFAULTS = {
     "zone_overlap": 0.3, "lost_seconds": 60, "relink_seconds": 600, "startup_grace": 60,
     "unidentified_after": 120, "unidentified_cooldown": 86400,
 }
+APPEARANCE_DEFAULTS = {"min_similarity": 0.70, "min_margin": 0.06, "save_arrivals": True}
 GALLERY_DEFAULTS = {"enabled": True, "interval": 300, "max_per_track": 6, "max_per_plate": 300, "save_others": True}
 
 
 def worker_cfg(cfg, syn):
     return dict(cfg["detection"], snapshot_base_url=syn.get("snapshot_base_url"),
                 vehicle=dict(VEHICLE_DEFAULTS, **(cfg.get("vehicle") or {})),
-                gallery=dict(GALLERY_DEFAULTS, **(cfg.get("gallery") or {})))
+                gallery=dict(GALLERY_DEFAULTS, **(cfg.get("gallery") or {})),
+                appearance=dict(APPEARANCE_DEFAULTS, **(cfg.get("appearance") or {})))
 
 
 def main():
