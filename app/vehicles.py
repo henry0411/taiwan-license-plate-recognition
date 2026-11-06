@@ -100,9 +100,10 @@ class VehicleTrack:
 
 
 class VehicleTracker:
-    def __init__(self, lost_seconds=60, relink_seconds=600, still_ratio=0.1):
+    def __init__(self, lost_seconds=60, relink_seconds=600, still_ratio=0.1, parked_ratio=None):
         self.tracks, self.lost = [], []
         self.lost_seconds, self.relink_seconds, self.still_ratio = lost_seconds, relink_seconds, still_ratio
+        self.parked_ratio = parked_ratio  # 已停妥的車改用較寬鬆的位移門檻 (偵測框抖動不算移動); None = 與 still_ratio 相同
 
     def update(self, dets, now, startup):
         """dets: [(x1, y1, x2, y2, conf, cls)]. 以 IoU 配對; 消失不久又出現在同位置的車視為同一台."""
@@ -136,7 +137,8 @@ class VehicleTracker:
         t.hits += 1
         (cx, cy), (sx, sy) = ((t.box[0] + t.box[2]) / 2, (t.box[1] + t.box[3]) / 2), \
             ((t.still_box[0] + t.still_box[2]) / 2, (t.still_box[1] + t.still_box[3]) / 2)
-        if ((cx - sx) ** 2 + (cy - sy) ** 2) ** 0.5 > self.still_ratio * max(1.0, t.box[2] - t.box[0]):
+        ratio = self.parked_ratio if self.parked_ratio is not None and t.parked_since is not None else self.still_ratio
+        if ((cx - sx) ** 2 + (cy - sy) ** 2) ** 0.5 > ratio * max(1.0, t.box[2] - t.box[0]):
             t.still_box, t.still_since, t.parked_since = t.box, now, None
 
     def owner_of(self, plate_box):

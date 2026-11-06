@@ -126,6 +126,8 @@ cameras:
     parked_rearm_seconds: 600
     # 停入前後比對: 車框區域與停入前 (1~30 分鐘前靜止畫面) 的邊緣相似度 >= 此值 = 原本就停著 (被人/車擋住後重新追蹤), 不通知
     arrival_same_similarity: 0.5
+    # 已停妥的車, 車框中心位移超過車寬此比例才算移動 (未停妥時仍為 0.1); 避免偵測框抖動造成重複「停妥」
+    parked_still_ratio: 0.3
     vehicle_conf: 0.12            # 夜間紅外線畫面機車信心常只有 0.13~0.36, 車庫內門檻放寬 (其他鏡頭用 vehicle.conf)
     vehicle_min_area: 0.04        # 車庫內車輛都很近, 小框多半是被擋住的局部 (座墊/車尾) 誤判
     zone: null            # 不設圍籬, 全畫面辨識

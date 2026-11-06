@@ -305,7 +305,8 @@ class CameraWorker(threading.Thread):
         self.tracks = []        # 車牌追蹤
         vcfg = cfg["vehicle"]
         self.vcfg = vcfg
-        self.vehicles = VehicleTracker(vcfg["lost_seconds"], vcfg["relink_seconds"])
+        self.vehicles = VehicleTracker(vcfg["lost_seconds"], vcfg["relink_seconds"],
+                                       parked_ratio=cam.get("parked_still_ratio"))
         self.vehicle_det = models.vehicle(cam.get("vehicle_model", vcfg["model"]),
                                           cam.get("vehicle_pad", vcfg["pad"]))
         self.last_vehicle_run = 0.0
@@ -526,7 +527,8 @@ class CameraWorker(threading.Thread):
             else:
                 self.home_since = now  # 回到原位: 此時已停著的車視同原本就在 (不採用駛入車牌/不通知)
             self.tracks = []
-            self.vehicles = VehicleTracker(self.vcfg["lost_seconds"], self.vcfg["relink_seconds"])
+            self.vehicles = VehicleTracker(self.vcfg["lost_seconds"], self.vcfg["relink_seconds"],
+                                           parked_ratio=self.cam.get("parked_still_ratio"))
 
         # 畫面幾乎沒變 (停車場多數時間如此) -> 略過偵測, 省 CPU; 每隔 static_refresh 秒仍完整處理一次
         thumb = cv2.cvtColor(cv2.resize(frame, (64, 36), interpolation=cv2.INTER_AREA), cv2.COLOR_BGR2GRAY)
