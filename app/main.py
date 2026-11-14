@@ -1065,6 +1065,32 @@ def worker_cfg(cfg, syn):
                 appearance=dict(APPEARANCE_DEFAULTS, **(cfg.get("appearance") or {})))
 
 
+def purge_snapshots(days):
+    """刪除 snapshots/ 與 raw/ 中超過 days 天的截圖, 回傳刪除張數."""
+    cutoff, removed = time.time() - days * 86400, 0
+    for d in (SNAP_DIR, RAW_DIR):
+        for f in d.glob("*.jpg"):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
+
+
+def snapshot_janitor(days):
+    """每小時清理一次過期截圖."""
+    while True:
+        try:
+            n = purge_snapshots(days)
+            if n:
+                log.info("已刪除 %d 張超過 %d 天的截圖", n, days)
+        except Exception:
+            log.exception("清理過期截圖失敗")
+        time.sleep(3600)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--config", default="/config/config.yaml")
@@ -1111,6 +1137,10 @@ def main():
     gallery = Gallery(DATA_DIR / "gallery", cfg.get("gallery", {}).get("max_per_plate", 300))
     for cam in cfg["cameras"]:
         CameraWorker(cam, det_cfg, models, chat, cooldowns, whitelist, gallery).start()
+
+    keep_days = cfg.get("web", {}).get("snapshot_keep_days")
+    if keep_days:
+        threading.Thread(target=snapshot_janitor, args=(keep_days,), daemon=True).start()
 
     port = cfg.get("web", {}).get("port", 8090)
     log.info("Web 介面: http://0.0.0.0:%d/", port)

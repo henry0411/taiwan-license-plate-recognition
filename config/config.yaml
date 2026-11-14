@@ -18,6 +18,7 @@ go2rtc:
 
 web:
   port: 8091            # 即時畫面 / 截圖: http://<主機>:8091/
+  snapshot_keep_days: 60  # 截圖 (data/snapshots, data/raw) 只保留最近幾天, 每小時清理一次; 不設 = 永久保留
 
 detection:
   plate_detector: yolo-v9-t-384-license-plate-end2end
