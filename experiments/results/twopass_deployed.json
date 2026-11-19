@@ -1,0 +1,19 @@
+{
+ "readable_plates": 171,
+ "both": {
+  "count": 51,
+  "median_plate_width_px": 118
+ },
+ "full_only": {
+  "count": 15,
+  "median_plate_width_px": 292
+ },
+ "second_only": {
+  "count": 102,
+  "median_plate_width_px": 81.5
+ },
+ "neither": {
+  "count": 3,
+  "median_plate_width_px": 43
+ }
+}

@@ -1,0 +1,21 @@
+{
+ "single_frame_cluster_ci": [
+  0.6502725510780909,
+  0.892660411622276
+ ],
+ "whitelist_accept_cluster_ci": [
+  0.7345652856246077,
+  0.930635838150289
+ ],
+ "whitelist_false_accept_plates": "0/56 plates",
+ "recovered": 11,
+ "recovered_edit_distance": {
+  "1": 10,
+  "3": 1
+ },
+ "gate0.8_selective": [
+  129,
+  136
+ ],
+ "note": "fusion results: see fusion_table.json"
+}

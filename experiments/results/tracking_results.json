@@ -1,0 +1,69 @@
+{
+ "frames": 1500,
+ "frames_with_vehicle": 742,
+ "jitter": {
+  "n": 760,
+  "p50": 0.01809044790326808,
+  "p90": 0.08791576997327337,
+  "p95": 0.13933224769699096,
+  "share_gt_0.1": 0.08289473684210526,
+  "share_gt_0.3": 0.011842105263157895
+ },
+ "sweep": {
+  "None": {
+   "parked_events": 109,
+   "tracks": 47,
+   "max_per_track": 18,
+   "tracks_reaching_notify": 17
+  },
+  "0.15": {
+   "parked_events": 84,
+   "tracks": 47,
+   "max_per_track": 11,
+   "tracks_reaching_notify": 17
+  },
+  "0.2": {
+   "parked_events": 70,
+   "tracks": 47,
+   "max_per_track": 6,
+   "tracks_reaching_notify": 17
+  },
+  "0.25": {
+   "parked_events": 62,
+   "tracks": 47,
+   "max_per_track": 4,
+   "tracks_reaching_notify": 17
+  },
+  "0.3": {
+   "parked_events": 61,
+   "tracks": 47,
+   "max_per_track": 4,
+   "tracks_reaching_notify": 17
+  },
+  "0.4": {
+   "parked_events": 57,
+   "tracks": 47,
+   "max_per_track": 3,
+   "tracks_reaching_notify": 17
+  },
+  "0.5": {
+   "parked_events": 52,
+   "tracks": 47,
+   "max_per_track": 3,
+   "tracks_reaching_notify": 17
+  },
+  "0.75": {
+   "parked_events": 49,
+   "tracks": 47,
+   "max_per_track": 2,
+   "tracks_reaching_notify": 17
+  },
+  "1.0": {
+   "parked_events": 48,
+   "tracks": 47,
+   "max_per_track": 2,
+   "tracks_reaching_notify": 17
+  }
+ },
+ "duration_hours": 45.6
+}

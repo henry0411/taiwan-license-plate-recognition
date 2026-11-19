@@ -1,0 +1,161 @@
+{
+ "counts": {
+  "?": 133,
+  "N": 46,
+  "L": 124,
+  "H": 47
+ },
+ "distinct_readable_plates": 56,
+ "single_frame": {
+  "xs model, 1 crop, argmax": {
+   "clear": [
+    90,
+    124
+   ],
+   "readable": [
+    112,
+    171
+   ]
+  },
+  "s model, 1 crop, argmax": {
+   "clear": [
+    100,
+    124
+   ],
+   "readable": [
+    121,
+    171
+   ]
+  },
+  "xs model, 1 crop, TW-format": {
+   "clear": [
+    93,
+    124
+   ],
+   "readable": [
+    115,
+    171
+   ]
+  },
+  "s model, 1 crop, TW-format": {
+   "clear": [
+    103,
+    124
+   ],
+   "readable": [
+    124,
+    171
+   ]
+  },
+  "xs+s, 1 crop, TW-format": {
+   "clear": [
+    102,
+    124
+   ],
+   "readable": [
+    124,
+    171
+   ]
+  },
+  "xs, 3 crops, TW-format": {
+   "clear": [
+    105,
+    124
+   ],
+   "readable": [
+    128,
+    171
+   ]
+  },
+  "s, 3 crops, TW-format": {
+   "clear": [
+    104,
+    124
+   ],
+   "readable": [
+    128,
+    171
+   ]
+  },
+  "xs+s, 3 crops, argmax": {
+   "clear": [
+    102,
+    124
+   ],
+   "readable": [
+    126,
+    171
+   ]
+  },
+  "xs+s, 3 crops, TW-format (deployed)": {
+   "clear": [
+    106,
+    124
+   ],
+   "readable": [
+    132,
+    171
+   ]
+  }
+ },
+ "gate": {
+  "0.0": {
+   "kept": 171,
+   "of": 171,
+   "correct": 132
+  },
+  "0.3": {
+   "kept": 167,
+   "of": 171,
+   "correct": 132
+  },
+  "0.45": {
+   "kept": 164,
+   "of": 171,
+   "correct": 132
+  },
+  "0.6": {
+   "kept": 159,
+   "of": 171,
+   "correct": 131
+  },
+  "0.7": {
+   "kept": 145,
+   "of": 171,
+   "correct": 130
+  },
+  "0.8": {
+   "kept": 136,
+   "of": 171,
+   "correct": 129
+  },
+  "junk_passing_0.45": 53,
+  "junk_passing_0.6": 39
+ },
+ "whitelist": {
+  "true_accept_exact": 132,
+  "true_accept_rule": 143,
+  "n_pos": 171,
+  "false_accept_rule": 0,
+  "n_neg": 171,
+  "false_accept_exact": 0,
+  "near_miss_false_accept": 0,
+  "n_near": 171
+ },
+ "breakdown": {
+  "outside|day_color": [
+   131,
+   165
+  ],
+  "garage|day_color": [
+   1,
+   5
+  ],
+  "garage|night_ir": [
+   0,
+   1
+  ]
+ },
+ "fusion_note": "superseded by fusion_table.json (same draws for all methods, plate-level bootstrap)",
+ "detection_note": "two-pass detection with the deployed vehicle detector: see twopass_deployed.json"
+}

@@ -1,0 +1,8 @@
+# models are not distributed (see README: YOLOv8 weights are AGPL-3.0)
+models/
+*.onnx
+# runtime data: camera frames, snapshots, galleries contain third-party plates and faces
+data/
+__pycache__/
+*.pyc
+*.bak-*

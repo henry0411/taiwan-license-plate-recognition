@@ -1,0 +1,98 @@
+{
+ "1": {
+  "plates": 56,
+  "single": 0.8549999999999999,
+  "vote": 0.8549999999999999,
+  "prob_avg": 0.8549999999999999,
+  "prob_avg_gated": 0.8549999999999999,
+  "ci_single": [
+   0.7725,
+   0.9257232142857145
+  ],
+  "ci_vote": [
+   0.7725,
+   0.9257232142857145
+  ],
+  "ci_prob_avg": [
+   0.7725,
+   0.9257232142857145
+  ],
+  "ci_prob_avg_gated": [
+   0.7725,
+   0.9257232142857145
+  ],
+  "fallback_draws_note": "if no frame passes the 0.45 gate, all frames are used (experiment only)"
+ },
+ "2": {
+  "plates": 32,
+  "single": 0.815625,
+  "vote": 0.9,
+  "prob_avg": 0.891875,
+  "prob_avg_gated": 0.891875,
+  "ci_single": [
+   0.7056250000000002,
+   0.9143749999999999
+  ],
+  "ci_vote": [
+   0.809359375,
+   0.970625
+  ],
+  "ci_prob_avg": [
+   0.797484375,
+   0.9674999999999999
+  ],
+  "ci_prob_avg_gated": [
+   0.797484375,
+   0.9674999999999999
+  ],
+  "fallback_draws_note": "if no frame passes the 0.45 gate, all frames are used (experiment only)"
+ },
+ "3": {
+  "plates": 25,
+  "single": 0.764,
+  "vote": 0.8959999999999999,
+  "prob_avg": 0.8952000000000001,
+  "prob_avg_gated": 0.8952000000000001,
+  "ci_single": [
+   0.63678,
+   0.8760000000000001
+  ],
+  "ci_vote": [
+   0.7847799999999999,
+   0.9847999999999999
+  ],
+  "ci_prob_avg": [
+   0.79358,
+   0.9727999999999999
+  ],
+  "ci_prob_avg_gated": [
+   0.79358,
+   0.9727999999999999
+  ],
+  "fallback_draws_note": "if no frame passes the 0.45 gate, all frames are used (experiment only)"
+ },
+ "5": {
+  "plates": 13,
+  "single": 0.7615384615384616,
+  "vote": 0.8707692307692306,
+  "prob_avg": 0.8969230769230769,
+  "prob_avg_gated": 0.9184615384615386,
+  "ci_single": [
+   0.5846153846153846,
+   0.9230769230769231
+  ],
+  "ci_vote": [
+   0.7046153846153846,
+   1.0
+  ],
+  "ci_prob_avg": [
+   0.7845384615384615,
+   1.0
+  ],
+  "ci_prob_avg_gated": [
+   0.8200000000000001,
+   1.0
+  ],
+  "fallback_draws_note": "if no frame passes the 0.45 gate, all frames are used (experiment only)"
+ }
+}
