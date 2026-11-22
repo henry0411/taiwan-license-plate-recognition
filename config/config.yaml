@@ -71,6 +71,7 @@ appearance:
   min_similarity: 0.70      # 最像的那台相似度須 >= 此值 (被擋住的局部/汽車誤判約 0.5~0.7)
   min_margin: 0.06          # 且須比第二名高出此值, 否則視為無法確定 (維持「有機車停入」)
   save_arrivals: true
+  types: {腳踏車: bicycle}   # 參考圖資料夾的車種 (未列出的視為機車); 通知圖示與車種依此顯示
 
 cameras:
   # name: 內部代號 (截圖檔名/原位參考資料夾, 請勿更改); label: 通知訊息與網頁上顯示的名稱
@@ -123,7 +124,10 @@ cameras:
     # 進車通知: 車輛停妥 vehicle.unidentified_after 秒 (2 分鐘) 後傳照片 (駛入時有讀到車牌則改發車牌通知);
     # 同一位置 parked_rearm_seconds 秒內一直有車停著則不重複通知 (車離開超過此時間後再停入才通知)
     notify_parked: true
-    appearance_match: true        # 讀不到車牌的機車以外觀辨識是哪一台 (見上方 appearance)
+    appearance_match: true        # 讀不到車牌的機車/腳踏車以外觀辨識是哪一台 (見上方 appearance)
+    vehicle_classes: [1, 2, 3, 5, 7]   # 車庫內另外偵測腳踏車 (COCO 1); 其他鏡頭維持汽車/機車/公車/貨車
+    vehicle_min_area_by_type: {bicycle: 0.02}   # 腳踏車車架細, 車框約佔畫面 3~4%, 面積下限放寬 (其他車種仍用 vehicle_min_area)
+    vehicle_conf_by_type: {bicycle: 0.3}        # 腳踏車信心門檻 (實測真腳踏車中位數 0.70, 機車局部誤判多在 0.13~0.4)
     parked_rearm_seconds: 600
     # 停入前後比對: 車框區域與停入前 (1~30 分鐘前靜止畫面) 的邊緣相似度 >= 此值 = 原本就停著 (被人/車擋住後重新追蹤), 不通知
     arrival_same_similarity: 0.5

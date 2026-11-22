@@ -12,7 +12,7 @@ import numpy as np
 from vehicle import CLASS_NAMES
 
 log = logging.getLogger("vehicles")
-TYPE_ZH = {"car": "汽車", "motorcycle": "機車", "bus": "公車", "truck": "貨車"}
+TYPE_ZH = {"bicycle": "腳踏車", "car": "汽車", "motorcycle": "機車", "bus": "公車", "truck": "貨車"}
 
 
 def iou(a, b):
