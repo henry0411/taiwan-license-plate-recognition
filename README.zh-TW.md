@@ -36,7 +36,7 @@
 | 台灣車牌格式約束解碼、白名單似然 | `app/tw_plate.py` |
 | 車輛偵測（YOLOv8n ONNX） | `app/vehicle.py` |
 | 車輛追蹤、停妥遲滯、邊緣相似度、外觀樣本 | `app/vehicles.py` |
-| 機車外觀辨識（DINOv2） | `app/appearance.py` |
+| 機車／腳踏車外觀辨識（DINOv2） | `app/appearance.py` |
 | 旋轉鏡頭原位判斷 | `app/home.py` |
 | Synology Chat webhook | `app/notify.py` |
 
@@ -60,8 +60,9 @@ docker compose run --rm lpr python main.py --config /config/config.yaml --test-m
 
 - `synology.webhook_url`：Synology Chat 的傳入 webhook 網址，請勿外流。
 - `cameras[].url`：MJPEG 串流網址。`camera-host`、`lpr-host`、`go2rtc-host` 都只是佔位名稱。
-- `config/whitelist.yaml`：填入自己的車牌，修改後會自動重新載入。
-- 機車參考圖：放在 `data/appearance/<名稱>/*.jpg`，每台約 10 張，白天和夜間都要有，修改後會自動重新載入。
+- `config/whitelist.yaml`：填入自己的車牌，修改後會自動重新載入。沒有車牌的車（例如腳踏車）可以只用外觀登錄：寫 `appearance: <資料夾名稱>`，不填 `plate`。
+- 機車／腳踏車參考圖：放在 `data/appearance/<名稱>/*.jpg`，每台約 10 張，白天和夜間都要有，修改後會自動重新載入。非機車的資料夾要在 `appearance.types` 登記車種（例如 `{my_bicycle: bicycle}`）。
+- 腳踏車（COCO 第 1 類）只在 `vehicle_classes` 含 1 的鏡頭偵測；各車種門檻用 `vehicle_min_area_by_type` 與 `vehicle_conf_by_type` 設定。腳踏車不會套用附近讀到的車牌。
 
 ## 重現實驗
 
@@ -81,7 +82,7 @@ docker compose run --rm lpr python main.py --config /config/config.yaml --test-m
 ## 分支
 
 - `main`：目前的程式碼、論文與實驗。
-- `history`：部署過程的 17 個去敏版本，時間從 2026-10-11 到 2026-11-14，由有日期的備份重建。
+- `history`：部署過程的去敏版本，從 2026-10-11 開始（到 2026-11-14 的 17 個由有日期的備份重建，之後每次更新一個）。
 
 ## 隱私
 

@@ -22,7 +22,7 @@ from fast_alpr.default_detector import DefaultDetector
 
 from appearance import Appearance, crop
 from home import HomeCheck
-from vehicle import VehicleDetector
+from vehicle import CLASS_NAMES, VehicleDetector
 from vehicles import TYPE_ZH, Gallery, VehicleTracker, inside, ref_edges, region_similarity, zone_overlap
 from notify import SynologyChat
 from ocr import PlateOCR
@@ -253,6 +253,7 @@ class Whitelist:
         self.path = Path(path)
         self.mtime = None
         self.entries, self.match_ratio, self.notify_whitelisted = [], 0.85, True
+        self.appearance_entries = []
         self.lock = threading.Lock()
 
     def _reload(self):
@@ -265,15 +266,20 @@ class Whitelist:
             return
         data = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
         entries = []
+        names = []
         for e in data.get("plates") or []:
             e = {"plate": e} if isinstance(e, str) else dict(e)
+            if not e.get("plate"):  # 沒有車牌 (例: 腳踏車): 只以外觀登錄, appearance 為 data/appearance/ 下的資料夾名稱
+                if e.get("appearance"):
+                    names.append(e)
+                continue
             e["plate"] = str(e["plate"]).upper().strip()
             entries.append(e)
-        self.entries = entries
+        self.entries, self.appearance_entries = entries, names
         self.match_ratio = float(data.get("match_ratio", 0.85))
         self.notify_whitelisted = bool(data.get("notify_whitelisted", True))
         self.mtime = mtime
-        log.info("白名單已載入: %d 筆", len(entries))
+        log.info("白名單已載入: %d 筆車牌, %d 筆外觀登錄", len(entries), len(names))
 
     def best(self, probs, decoder):
         """回傳 (最可能的白名單項目, 其機率) 或 (None, 0)."""
@@ -285,6 +291,12 @@ class Whitelist:
                 if like > best[1]:
                     best = (e, like)
             return best
+
+    def lookup_name(self, name):
+        """外觀登錄 (無車牌) 的白名單項目."""
+        with self.lock:
+            self._reload()
+            return next((e for e in self.appearance_entries if e["appearance"] == name), None)
 
     def lookup(self, plate):
         with self.lock:
@@ -641,8 +653,13 @@ class CameraWorker(threading.Thread):
     def update_vehicles(self, frame, now):
         h, w = frame.shape[:2]
         min_area = self.cam.get("vehicle_min_area", self.vcfg["min_area"]) * w * h
+        # 車種別的面積下限 (腳踏車車架細, 車框比機車小), 例: vehicle_min_area_by_type: {bicycle: 0.02}
+        by_type = {k: v * w * h for k, v in (self.cam.get("vehicle_min_area_by_type") or {}).items()}
+        # 車種別的信心門檻, 例: vehicle_conf_by_type: {bicycle: 0.3} (偵測器偶爾把機車局部判成腳踏車, 信心多半很低)
+        conf_by_type = self.cam.get("vehicle_conf_by_type") or {}
         dets = [d for d in self.vehicle_det.detect(frame, self.cam.get("vehicle_classes"))
-                if (d[2] - d[0]) * (d[3] - d[1]) >= min_area and d[4] >= self.cam.get("vehicle_conf", self.vcfg["conf"])
+                if (d[2] - d[0]) * (d[3] - d[1]) >= by_type.get(CLASS_NAMES.get(int(d[5])), min_area)
+                and d[4] >= conf_by_type.get(CLASS_NAMES.get(int(d[5])), self.cam.get("vehicle_conf", self.vcfg["conf"]))
                 and not any(zone_overlap(d[:4], z) >= 0.5 for z in self.ignore_px)]
         # 一個框同時包住兩台以上其他車輛 (把相鄰的車併成一台的誤判) -> 忽略
         dets = [d for d in dets if sum(inside(e[:4], d[:4]) >= 0.7 for e in dets if e is not d) < 2]
@@ -740,6 +757,8 @@ class CameraWorker(threading.Thread):
     def lookup_recent_plate(self, v, now):
         """停妥車輛讀不到車牌: 找駛入前後讀到、尚未被其他車認領的車牌.
         預設只採用本鏡頭讀到的 (各鏡頭拍的不是同一個地方); 鏡頭設定 plate_sources 可指定其他拍得到同一條車道的鏡頭."""
+        if v.type_name == "bicycle":  # 腳踏車沒有車牌, 不套用附近讀到的車牌
+            return False
         window = self.vcfg.get("approach_seconds", 300)
         types = {"car": "car", "truck": "car", "bus": "car", "motorcycle": "motorcycle"}
         cands = RECENT.candidates(v.first_seen - window, now, self.cam.get("plate_sources", [self.name_]))
@@ -821,9 +840,10 @@ class CameraWorker(threading.Thread):
             self.parked_spots.append((cx, cy, now))
 
     def identify_appearance(self, frame, v):
-        """讀不到車牌的機車: 以外觀比對是哪一台自家機車. 回傳 (名稱, 相似度) 或 None."""
+        """讀不到車牌的機車/腳踏車: 以外觀比對是哪一台自家車. 回傳 (名稱, 相似度) 或 None.
+        機車與腳踏車共用參考圖 (電動腳踏車有時會被偵測成機車, 反之亦然); 參考圖的車種見 appearance.types."""
         ap, acfg = self.models.appearance, self.cfg["appearance"]
-        if ap is None or v.type_name != "motorcycle" or not self.cam.get("appearance_match"):
+        if ap is None or v.type_name not in ("motorcycle", "bicycle") or not self.cam.get("appearance_match"):
             return None
         img = crop(frame, v.box)
         try:
@@ -851,8 +871,13 @@ class CameraWorker(threading.Thread):
         fname = self._snapshot(frame, [(v.box, label, (255, 160, 0))], stamp, "arrival")
         log.info("[%s] 🚗 車輛 #%d (%s) 停入%s -> %s", self.name_, v.id, v.type_name,
                  f", 外觀辨識為 {who[0]} ({who[1]:.2f})" if who else "", fname)
+        # 車種以參考圖登記的為準 (偵測器可能把電動腳踏車當成機車)
+        kind = (self.cfg["appearance"].get("types") or {}).get(who[0], "motorcycle") if who else v.type_name
+        icon = {"bicycle": "🚲", "motorcycle": "🛵"}.get(kind, "🚗")
+        entry = self.whitelist.lookup_name(who[0]) if who else None
         self._send("\n".join([
-            f"🛵 {self.label}：{who[0]} 停入" if who else f"🚗 {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停入",
+            f"{icon} {self.label}：{who[0]} 停入" if who else f"{icon} {self.label}：有{TYPE_ZH.get(v.type_name, '車輛')}停入",
+            *(["✅ 白名單車輛（外觀登錄）"] if entry else []),
             *([f"🔍 外觀比對：相似度 {who[1]:.2f} (未讀到車牌)"] if who else []),
             f"📷 鏡頭：{self.label}",
             f"🕒 時間：{stamp:%Y-%m-%d %H:%M:%S}",

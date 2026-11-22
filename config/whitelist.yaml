@@ -17,3 +17,9 @@ plates:
   # - plate: 123-ABC
   #   name: "my scooter"
   #   type: motorcycle
+
+  # 沒有車牌的車 (例: 腳踏車) 以外觀登錄 / appearance-only entry (no plate):
+  # appearance = data/appearance/ 下的參考圖資料夾名稱 / reference folder name under data/appearance/
+  # - appearance: my_bicycle
+  #   name: "my bicycle"
+  #   type: bicycle

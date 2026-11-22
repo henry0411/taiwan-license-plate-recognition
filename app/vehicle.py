@@ -4,7 +4,7 @@ import numpy as np
 import onnxruntime as ort
 
 # COCO 類別
-CLASS_NAMES = {2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}
+CLASS_NAMES = {1: "bicycle", 2: "car", 3: "motorcycle", 5: "bus", 7: "truck"}  # 1 (腳踏車) 只在鏡頭設定 vehicle_classes 含 1 時偵測
 
 
 class VehicleDetector:

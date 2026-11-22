@@ -36,7 +36,7 @@ parked vehicle without a plate ─► before/after edge similarity (was it alrea
 | Taiwan format-constrained decoding, whitelist likelihood | `app/tw_plate.py` |
 | Vehicle detector (YOLOv8n ONNX) | `app/vehicle.py` |
 | Vehicle tracking, parked hysteresis, edge similarity, gallery | `app/vehicles.py` |
-| Motorcycle appearance identification (DINOv2) | `app/appearance.py` |
+| Motorcycle / bicycle appearance identification (DINOv2) | `app/appearance.py` |
 | Pan-tilt camera home-position check | `app/home.py` |
 | Synology Chat webhook | `app/notify.py` |
 
@@ -60,8 +60,9 @@ Edit `config/config.yaml`:
 
 - `synology.webhook_url`: your Synology Chat incoming-webhook URL (keep it secret).
 - `cameras[].url`: MJPEG stream URLs. `camera-host`, `lpr-host` and `go2rtc-host` are placeholders.
-- `config/whitelist.yaml`: your own plates. It is reloaded automatically.
-- Motorcycle references: `data/appearance/<name>/*.jpg`, about 10 crops per vehicle covering day and night. They are reloaded automatically.
+- `config/whitelist.yaml`: your own plates. It is reloaded automatically. Vehicles without a plate (e.g. a bicycle) can be registered by appearance only: an entry with `appearance: <folder name>` and no `plate`.
+- Motorcycle / bicycle references: `data/appearance/<name>/*.jpg`, about 10 crops per vehicle covering day and night. They are reloaded automatically. Set the vehicle type of non-motorcycle folders in `appearance.types` (e.g. `{my_bicycle: bicycle}`).
+- Bicycles (COCO class 1) are detected only on cameras whose `vehicle_classes` include 1. Per-type thresholds: `vehicle_min_area_by_type` and `vehicle_conf_by_type`. Bicycles never adopt plates read nearby.
 
 ## Reproducing the experiments
 
@@ -81,7 +82,7 @@ Edit `config/config.yaml`:
 ## Branches
 
 - `main`: current code, paper and experiments.
-- `history`: 17 sanitized snapshots of the deployment, 2026-10-11 → 2026-11-14, reconstructed from dated backups.
+- `history`: sanitized snapshots of the deployment from 2026-10-11 onward (17 reconstructed from dated backups up to 2026-11-14, then one per update).
 
 ## Privacy
 
